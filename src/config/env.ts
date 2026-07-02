@@ -30,11 +30,22 @@ export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   requestTimeoutMs: parseNumber(process.env.REQUEST_TIMEOUT_MS, 15000),
+  scraperRequestDelayMs: parseNumber(process.env.SCRAPER_REQUEST_DELAY_MS, 350),
   mangadexBaseUrl: process.env.MANGADEX_BASE_URL ?? 'https://api.mangadex.org',
   comickBaseUrl: process.env.COMICK_BASE_URL ?? 'https://comick.live',
   comickImageBaseUrl: process.env.COMICK_IMAGE_BASE_URL ?? 'https://meo.comick.pictures',
+  myMangaOnlineBaseUrl: process.env.MYMANGAONLINE_BASE_URL ?? 'https://mymangaonline.net',
+  inmangaBaseUrl: process.env.INMANGA_BASE_URL ?? 'https://inmanga.com',
+  tuMangaOnlineBaseUrl: process.env.TUMANGAONLINE_BASE_URL ?? 'https://lectortmo.vip',
+  leerMangaBaseUrl: process.env.LEERMANGA_BASE_URL ?? 'https://leermanga.net',
   mangadexDefaultLanguage: process.env.MANGADEX_DEFAULT_LANGUAGE ?? 'es',
   defaultChapterQuality: parseChapterQuality(process.env.DEFAULT_CHAPTER_QUALITY),
+  providers: {
+    myMangaOnline: parseBoolean(process.env.MYMANGAONLINE_PROVIDER_ENABLED, true),
+    inmanga: parseBoolean(process.env.INMANGA_PROVIDER_ENABLED, true),
+    leerManga: parseBoolean(process.env.LEERMANGA_PROVIDER_ENABLED, true),
+    tuMangaOnline: parseBoolean(process.env.TUMANGAONLINE_PROVIDER_ENABLED, true)
+  },
   sources: {
     mangadex: parseBoolean(process.env.MANGADEX_ENABLED, true),
     inmanga: parseBoolean(process.env.INMANGA_ENABLED, false),

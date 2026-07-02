@@ -1,9 +1,12 @@
 import {
   ChapterOptions,
   ChapterPageOptions,
+  MangaLibraryOptions,
   NormalizedChapter,
   NormalizedManga,
   NormalizedMangaDetails,
+  NormalizedMangaLibraryPage,
+  NormalizedMangaTag,
   NormalizedPage,
   SearchOptions,
   SourceOptions
@@ -116,11 +119,29 @@ export class MangaAggregatorService {
     return source.getChapterPages(chapterId, options);
   }
 
+  async getMangaLibrary(options?: MangaLibraryOptions): Promise<NormalizedMangaLibraryPage> {
+    return this.getMangaDexSource().getMangaLibrary(options);
+  }
+
+  async getMangaTags(options?: SourceOptions): Promise<NormalizedMangaTag[]> {
+    return this.getMangaDexSource().getMangaTags(options?.lang);
+  }
+
   private getEnabledSource(sourceId: string): MangaSource {
     const source = this.getSource(sourceId);
 
     if (!source.enabled) {
       throw new SourceNotImplementedError(`Source "${sourceId}" is disabled or not implemented yet`);
+    }
+
+    return source;
+  }
+
+  private getMangaDexSource(): MangaDexService {
+    const source = this.getEnabledSource('mangadex');
+
+    if (!(source instanceof MangaDexService)) {
+      throw new SourceNotImplementedError('MangaDex library is not available');
     }
 
     return source;

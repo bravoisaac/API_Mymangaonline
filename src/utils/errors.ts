@@ -28,6 +28,12 @@ export class ExternalApiError extends AppError {
   }
 }
 
+export class SourceUnavailableError extends AppError {
+  constructor(source: string, reason: string) {
+    super(`Source "${source}" is unavailable: ${reason}`, 503);
+  }
+}
+
 export class ValidationError extends AppError {
   constructor(message: string) {
     super(message, 400);

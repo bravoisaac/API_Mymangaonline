@@ -11,6 +11,7 @@ import {
   SearchOptions,
   SourceOptions
 } from '../../types/manga.types';
+import { filterAsyncWithConcurrency } from '../../utils/async';
 import { ExternalApiError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 import { normalizeStatus } from '../../utils/normalize';
@@ -204,8 +205,9 @@ export class ComickService implements MangaSource {
     try {
       const data = await this.requestSearch(query, options.limit ?? 20);
       const comics = resolveSearchComics(data);
+      const mappedMangas = comics.map((comic) => this.mapManga(comic, lang));
 
-      return comics.map((comic) => this.mapManga(comic, lang));
+      return this.filterMangasWithReadableChapters(mappedMangas, lang);
     } catch (error) {
       throw new ExternalApiError(getComickErrorMessage(error));
     }
@@ -219,14 +221,17 @@ export class ComickService implements MangaSource {
         headers: getComickRequestHeaders(),
         responseType: 'text'
       });
-      const comic = this.extractJsonFromHtml<ComickComic>(response.data, 'comic-data');
+      const data = this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
+      const comic = resolveComicDetails(data);
+      const embeddedChapters = resolveEmbeddedChapters(data);
       const manga = this.mapManga(comic, lang);
+      const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? id);
 
       return {
         ...manga,
         authors: this.getAuthors(comic),
         artists: this.getAuthors(comic),
-        chaptersCount: this.getChaptersCount(comic, undefined)
+        chaptersCount: await this.getLanguageChaptersCount(mangaId, lang, embeddedChapters)
       };
     } catch (error) {
       throw new ExternalApiError(getComickErrorMessage(error));
@@ -239,17 +244,17 @@ export class ComickService implements MangaSource {
     const page = Math.floor((options.offset ?? 0) / limit) + 1;
 
     try {
-      const response = await httpClient.get<ComickChaptersResponse>(`${this.baseUrl}/api/comics/${mangaId}/chapter-list`, {
-        headers: getComickRequestHeaders(),
-        params: {
-          lang,
-          page
-        }
+      const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
+      const chapters = await this.requestChapters(canonicalMangaId, {
+        lang,
+        page,
+        limit
       });
 
-      return (response.data.data ?? response.data.chapters ?? [])
-        .map((chapter) => this.mapChapter(chapter, mangaId, lang))
-        .filter((chapter) => chapter.chapter);
+      return chapters
+        .filter((chapter) => this.isReadableChapterInLanguage(chapter, lang))
+        .map((chapter) => this.mapChapter(chapter, canonicalMangaId, lang))
+        .filter((chapter) => chapter.id);
     } catch (error) {
       throw new ExternalApiError(getComickErrorMessage(error));
     }
@@ -346,16 +351,97 @@ export class ComickService implements MangaSource {
     return uniqueStrings(comic.md_comic_md_authors?.map((author) => author.md_authors?.name) ?? []);
   }
 
-  private getChaptersCount(comic: ComickComic, chapters: ComickChapter[] | undefined) {
-    if (typeof comic.chapters_count === 'number') {
-      return comic.chapters_count;
+  private async getCanonicalMangaId(mangaId: string) {
+    try {
+      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${mangaId}`, {
+        headers: getComickRequestHeaders(),
+        responseType: 'text'
+      });
+      const data = this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
+      const comic = resolveComicDetails(data);
+
+      return comic.slug ?? comic.hid ?? mangaId;
+    } catch {
+      return mangaId;
+    }
+  }
+
+  private async getLanguageChaptersCount(
+    mangaId: string,
+    language: string,
+    embeddedChapters: ComickChapter[] | undefined
+  ) {
+    if (embeddedChapters?.length) {
+      return embeddedChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, language)).length;
     }
 
-    if (typeof comic.last_chapter === 'number') {
-      return comic.last_chapter;
+    try {
+      const chapters = await this.requestChapters(mangaId, {
+        lang: language,
+        page: 1,
+        limit: 100
+      });
+
+      return chapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, language)).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async requestChapters(
+    mangaId: string,
+    params: {
+      lang?: string;
+      page: number;
+      limit: number;
+    }
+  ): Promise<ComickChapter[]> {
+    const requestParams: Record<string, string | number> = {
+      page: params.page,
+      limit: params.limit
+    };
+
+    if (params.lang) {
+      requestParams.lang = params.lang;
     }
 
-    return chapters?.length ?? 0;
+    const response = await httpClient.get<ComickChaptersResponse>(
+      `${this.baseUrl}/api/comics/${mangaId}/chapter-list`,
+      {
+        headers: getComickRequestHeaders(),
+        params: requestParams
+      }
+    );
+
+    return response.data.data ?? response.data.chapters ?? [];
+  }
+
+  private isLanguageMatch(value: string | null | undefined, language: string) {
+    return value?.toLowerCase() === language.toLowerCase();
+  }
+
+  private isReadableChapterInLanguage(chapter: ComickChapter, language: string) {
+    const pages = chapter.md_images_count ?? chapter.images_count ?? 1;
+
+    return pages > 0 && this.isLanguageMatch(chapter.lang, language);
+  }
+
+  private async hasReadableChapters(mangaId: string, language: string) {
+    try {
+      const chapters = await this.requestChapters(mangaId, {
+        lang: language,
+        page: 1,
+        limit: 20
+      });
+
+      return chapters.some((chapter) => this.isReadableChapterInLanguage(chapter, language));
+    } catch {
+      return false;
+    }
+  }
+
+  private async filterMangasWithReadableChapters(mangas: NormalizedManga[], language: string) {
+    return filterAsyncWithConcurrency(mangas, (manga) => this.hasReadableChapters(manga.id, language));
   }
 
   private async requestSearch(query: string, limit: number): Promise<ComickSearchResponse> {

@@ -19,6 +19,13 @@ export interface ChapterPageOptions extends SourceOptions {
   quality?: ChapterQuality;
 }
 
+export interface MangaLibraryOptions extends SourceOptions {
+  page?: number;
+  limit?: number;
+  tagIds?: string[];
+  tagMode?: 'AND' | 'OR';
+}
+
 export interface NormalizedManga {
   id: string;
   source: string;
@@ -37,6 +44,21 @@ export interface NormalizedMangaDetails extends NormalizedManga {
   authors: string[];
   artists: string[];
   chaptersCount: number;
+}
+
+export interface NormalizedMangaLibraryPage {
+  source: string;
+  lang: string;
+  mangas: NormalizedManga[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface NormalizedMangaTag {
+  id: string;
+  name: string;
+  group: string;
 }
 
 export interface NormalizedChapter {

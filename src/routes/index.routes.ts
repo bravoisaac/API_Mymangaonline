@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { mangaRoutes } from './manga.routes';
 import { proxyRoutes } from './proxy.routes';
+import { providerRoutes } from './provider.routes';
 import { sourceRoutes } from './source.routes';
 
 export const indexRoutes = Router();
@@ -15,5 +16,6 @@ indexRoutes.get('/health', (_request, response) => {
 });
 
 indexRoutes.use('/sources', sourceRoutes);
+indexRoutes.use('/providers', providerRoutes);
 indexRoutes.use('/manga', mangaRoutes);
 indexRoutes.use('/proxy', proxyRoutes);
