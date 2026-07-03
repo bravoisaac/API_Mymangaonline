@@ -15,8 +15,9 @@ import {
   SearchOptions,
   SourceOptions
 } from '../../types/manga.types';
-import { ExternalApiError } from '../../utils/errors';
 import { filterAsyncWithConcurrency } from '../../utils/async';
+import { createCacheKey, TtlCache } from '../../utils/cache';
+import { ExternalApiError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 import { getAlternativeTitles, getLocalizedText, normalizeStatus } from '../../utils/normalize';
 import { MangaSource } from './mangaSource.interface';
@@ -126,95 +127,107 @@ export class MangaDexService implements MangaSource {
   public readonly supportsSpanish = true;
   public readonly supportsPages = true;
   private readonly baseUrl = env.mangadexBaseUrl;
+  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
 
   async searchManga(query: string, options: SearchOptions = {}): Promise<NormalizedManga[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const limit = options.limit ?? 20;
 
-    try {
-      const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
-        params: {
-          title: query,
-          limit: options.limit ?? 20,
-          'includes[]': ['cover_art'],
-          'availableTranslatedLanguage[]': [lang],
-          'contentRating[]': ['safe', 'suggestive'],
-          hasAvailableChapters: true,
-          'order[relevance]': 'desc'
-        }
-      });
+    return this.cached(['searchManga', query.trim().toLowerCase(), lang, limit], async () => {
+      try {
+        const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
+          params: {
+            title: query,
+            limit,
+            'includes[]': ['cover_art'],
+            'availableTranslatedLanguage[]': [lang],
+            'contentRating[]': ['safe', 'suggestive'],
+            hasAvailableChapters: true,
+            'order[relevance]': 'desc'
+          }
+        });
 
-      const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
+        const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
 
-      return this.filterMangasWithReadableChapters(mappedMangas, lang);
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return this.filterMangasWithReadableChapters(mappedMangas, lang);
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   async getMangaDetails(id: string, options: SourceOptions = {}): Promise<NormalizedMangaDetails> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
 
-    try {
-      const response = await httpClient.get<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
-        params: {
-          'includes[]': ['cover_art', 'author', 'artist']
-        }
-      });
+    return this.cached(['getMangaDetails', id, lang], async () => {
+      try {
+        const response = await httpClient.get<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
+          params: {
+            'includes[]': ['cover_art', 'author', 'artist']
+          }
+        });
 
-      const chaptersCount = await this.getChapterCount(id, lang);
-      const manga = this.mapManga(response.data.data, lang);
+        const chaptersCount = await this.getChapterCount(id, lang);
+        const manga = this.mapManga(response.data.data, lang);
 
-      return {
-        ...manga,
-        authors: getRelationshipNames(response.data.data, 'author'),
-        artists: getRelationshipNames(response.data.data, 'artist'),
-        chaptersCount
-      };
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return {
+          ...manga,
+          authors: getRelationshipNames(response.data.data, 'author'),
+          artists: getRelationshipNames(response.data.data, 'artist'),
+          chaptersCount
+        };
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   async getChapters(mangaId: string, options: ChapterOptions = {}): Promise<NormalizedChapter[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const limit = options.limit ?? 100;
+    const offset = options.offset ?? 0;
 
-    try {
-      const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(
-        `${this.baseUrl}/manga/${mangaId}/feed`,
-        {
-          params: {
-            limit: options.limit ?? 100,
-            offset: options.offset ?? 0,
-            'translatedLanguage[]': [lang],
-            'order[chapter]': 'asc'
+    return this.cached(['getChapters', mangaId, lang, limit, offset], async () => {
+      try {
+        const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(
+          `${this.baseUrl}/manga/${mangaId}/feed`,
+          {
+            params: {
+              limit,
+              offset,
+              'translatedLanguage[]': [lang],
+              'order[chapter]': 'asc'
+            }
           }
-        }
-      );
+        );
 
-      return response.data.data
-        .map((entity) => this.mapChapter(entity, mangaId, lang))
-        .filter((chapter) => chapter.pages > 0);
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return response.data.data
+          .map((entity) => this.mapChapter(entity, mangaId, lang))
+          .filter((chapter) => chapter.pages > 0);
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   async getChapterPages(chapterId: string, options: ChapterPageOptions = {}): Promise<NormalizedPage[]> {
     const quality = options.quality ?? env.defaultChapterQuality;
 
-    try {
-      const response = await httpClient.get<AtHomeResponse>(`${this.baseUrl}/at-home/server/${chapterId}`);
-      const fileNames = quality === 'data-saver' ? response.data.chapter.dataSaver : response.data.chapter.data;
+    return this.cached(['getChapterPages', chapterId, quality], async () => {
+      try {
+        const response = await httpClient.get<AtHomeResponse>(`${this.baseUrl}/at-home/server/${chapterId}`);
+        const fileNames = quality === 'data-saver' ? response.data.chapter.dataSaver : response.data.chapter.data;
 
-      return fileNames.map((fileName, index) => ({
-        page: index + 1,
-        url: this.buildPageUrl(response.data.baseUrl, response.data.chapter.hash, fileName, quality),
-        width: null,
-        height: null
-      }));
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return fileNames.map((fileName, index) => ({
+          page: index + 1,
+          url: this.buildPageUrl(response.data.baseUrl, response.data.chapter.hash, fileName, quality),
+          width: null,
+          height: null
+        }));
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   async getMangaLibrary(options: MangaLibraryOptions = {}): Promise<NormalizedMangaLibraryPage> {
@@ -241,41 +254,45 @@ export class MangaDexService implements MangaSource {
       params.includedTagsMode = options.tagMode ?? 'AND';
     }
 
-    try {
-      const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
-        params
-      });
-      const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
-      const readableMangas = await this.filterMangasWithReadableChapters(mappedMangas, lang);
+    return this.cached(['getMangaLibrary', params], async () => {
+      try {
+        const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
+          params
+        });
+        const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
+        const readableMangas = await this.filterMangasWithReadableChapters(mappedMangas, lang);
 
-      return {
-        source: this.id,
-        lang,
-        mangas: readableMangas,
-        total: response.data.total ?? response.data.data.length,
-        limit,
-        offset
-      };
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return {
+          source: this.id,
+          lang,
+          mangas: readableMangas,
+          total: response.data.total ?? response.data.data.length,
+          limit,
+          offset
+        };
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   async getMangaTags(language = env.mangadexDefaultLanguage): Promise<NormalizedMangaTag[]> {
-    try {
-      const response = await httpClient.get<MangaDexCollection<TagAttributes>>(`${this.baseUrl}/manga/tag`);
+    return this.cached(['getMangaTags', language], async () => {
+      try {
+        const response = await httpClient.get<MangaDexCollection<TagAttributes>>(`${this.baseUrl}/manga/tag`);
 
-      return response.data.data
-        .map((entity) => ({
-          id: entity.id,
-          name: getLocalizedText(entity.attributes.name, language),
-          group: entity.attributes.group ?? ''
-        }))
-        .filter((tag) => (tag.group === 'genre' || tag.group === 'theme') && tag.name)
-        .sort((first, second) => first.name.localeCompare(second.name));
-    } catch (error) {
-      throw new ExternalApiError(getMangaDexErrorMessage(error));
-    }
+        return response.data.data
+          .map((entity) => ({
+            id: entity.id,
+            name: getLocalizedText(entity.attributes.name, language),
+            group: entity.attributes.group ?? ''
+          }))
+          .filter((tag) => (tag.group === 'genre' || tag.group === 'theme') && tag.name)
+          .sort((first, second) => first.name.localeCompare(second.name));
+      } catch (error) {
+        throw new ExternalApiError(getMangaDexErrorMessage(error));
+      }
+    });
   }
 
   private mapManga(entity: MangaDexEntity<MangaAttributes>, language: string): NormalizedManga {
@@ -314,36 +331,39 @@ export class MangaDexService implements MangaSource {
   }
 
   private async getChapterCount(mangaId: string, language: string) {
-    const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
-      params: {
-        limit: 100,
-        offset: 0,
-        'translatedLanguage[]': [language]
-      }
+    const readableChapters = await this.getChapters(mangaId, {
+      lang: language,
+      limit: 100,
+      offset: 0
     });
-    const readableChapters = response.data.data.filter((entity) => (entity.attributes.pages ?? 0) > 0);
 
     return readableChapters.length;
   }
 
   private async hasReadableChapters(mangaId: string, language: string) {
-    try {
-      const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
-        params: {
-          limit: 100,
-          offset: 0,
-          'translatedLanguage[]': [language],
-          'order[chapter]': 'asc'
-        }
-      });
+    return this.cached(['hasReadableChapters', mangaId, language], async () => {
+      try {
+        const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
+          params: {
+            limit: 10,
+            offset: 0,
+            'translatedLanguage[]': [language],
+            'order[chapter]': 'asc'
+          }
+        });
 
-      return response.data.data.some((entity) => (entity.attributes.pages ?? 0) > 0);
-    } catch {
-      return false;
-    }
+        return response.data.data.some((entity) => (entity.attributes.pages ?? 0) > 0);
+      } catch {
+        return false;
+      }
+    });
   }
 
   private async filterMangasWithReadableChapters(mangas: NormalizedManga[], language: string) {
     return filterAsyncWithConcurrency(mangas, (manga) => this.hasReadableChapters(manga.id, language));
+  }
+
+  private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {
+    return this.cache.getOrSet(createCacheKey(this.id, ...parts), loader) as Promise<TValue>;
   }
 }

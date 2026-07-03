@@ -12,6 +12,7 @@ import {
   SourceOptions
 } from '../../types/manga.types';
 import { filterAsyncWithConcurrency } from '../../utils/async';
+import { createCacheKey, TtlCache } from '../../utils/cache';
 import { ExternalApiError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 import { normalizeStatus } from '../../utils/normalize';
@@ -194,6 +195,7 @@ export class ComickService implements MangaSource {
   public readonly supportsPages = true;
   private readonly baseUrl = env.comickBaseUrl;
   private readonly imageBaseUrl = env.comickImageBaseUrl;
+  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -201,41 +203,42 @@ export class ComickService implements MangaSource {
 
   async searchManga(query: string, options: SearchOptions = {}): Promise<NormalizedManga[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const limit = options.limit ?? 20;
 
-    try {
-      const data = await this.requestSearch(query, options.limit ?? 20);
-      const comics = resolveSearchComics(data);
-      const mappedMangas = comics.map((comic) => this.mapManga(comic, lang));
+    return this.cached(['searchManga', query.trim().toLowerCase(), lang, limit], async () => {
+      try {
+        const data = await this.requestSearch(query, limit);
+        const comics = resolveSearchComics(data);
+        const mappedMangas = comics.map((comic) => this.mapManga(comic, lang));
 
-      return this.filterMangasWithReadableChapters(mappedMangas, lang);
-    } catch (error) {
-      throw new ExternalApiError(getComickErrorMessage(error));
-    }
+        return this.filterMangasWithReadableChapters(mappedMangas, lang);
+      } catch (error) {
+        throw new ExternalApiError(getComickErrorMessage(error));
+      }
+    });
   }
 
   async getMangaDetails(id: string, options: SourceOptions = {}): Promise<NormalizedMangaDetails> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
 
-    try {
-      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${id}`, {
-        headers: getComickRequestHeaders(),
-        responseType: 'text'
-      });
-      const data = this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
-      const comic = resolveComicDetails(data);
-      const embeddedChapters = resolveEmbeddedChapters(data);
-      const manga = this.mapManga(comic, lang);
-      const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? id);
+    return this.cached(['getMangaDetails', id, lang], async () => {
+      try {
+        const data = await this.requestComicData(id);
+        const comic = resolveComicDetails(data);
+        const embeddedChapters = resolveEmbeddedChapters(data);
+        const manga = this.mapManga(comic, lang);
+        const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? id);
 
-      return {
-        ...manga,
-        authors: this.getAuthors(comic),
-        artists: this.getAuthors(comic),
-        chaptersCount: await this.getLanguageChaptersCount(mangaId, lang, embeddedChapters)
-      };
-    } catch (error) {
-      throw new ExternalApiError(getComickErrorMessage(error));
-    }
+        return {
+          ...manga,
+          authors: this.getAuthors(comic),
+          artists: this.getAuthors(comic),
+          chaptersCount: await this.getLanguageChaptersCount(mangaId, lang, embeddedChapters)
+        };
+      } catch (error) {
+        throw new ExternalApiError(getComickErrorMessage(error));
+      }
+    });
   }
 
   async getChapters(mangaId: string, options: ChapterOptions = {}): Promise<NormalizedChapter[]> {
@@ -243,38 +246,42 @@ export class ComickService implements MangaSource {
     const limit = options.limit ?? 100;
     const page = Math.floor((options.offset ?? 0) / limit) + 1;
 
-    try {
-      const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
-      const chapters = await this.requestChapters(canonicalMangaId, {
-        lang,
-        page,
-        limit
-      });
+    return this.cached(['getChapters', mangaId, lang, page, limit], async () => {
+      try {
+        const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
+        const chapters = await this.requestChapters(canonicalMangaId, {
+          lang,
+          page,
+          limit
+        });
 
-      return chapters
-        .filter((chapter) => this.isReadableChapterInLanguage(chapter, lang))
-        .map((chapter) => this.mapChapter(chapter, canonicalMangaId, lang))
-        .filter((chapter) => chapter.id);
-    } catch (error) {
-      throw new ExternalApiError(getComickErrorMessage(error));
-    }
+        return chapters
+          .filter((chapter) => this.isReadableChapterInLanguage(chapter, lang))
+          .map((chapter) => this.mapChapter(chapter, canonicalMangaId, lang))
+          .filter((chapter) => chapter.id);
+      } catch (error) {
+        throw new ExternalApiError(getComickErrorMessage(error));
+      }
+    });
   }
 
   async getChapterPages(chapterId: string, _options?: ChapterPageOptions): Promise<NormalizedPage[]> {
-    try {
-      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${chapterId}`, {
-        headers: getComickRequestHeaders(),
-        responseType: 'text'
-      });
-      const data = this.extractJsonFromHtml<ComickChapterPagesResponse>(response.data, 'sv-data');
-      const images = data.chapter?.images ?? data.chapter?.md_images ?? data.images ?? data.md_images ?? [];
+    return this.cached(['getChapterPages', chapterId], async () => {
+      try {
+        const response = await httpClient.get<string>(`${this.baseUrl}/comic/${chapterId}`, {
+          headers: getComickRequestHeaders(),
+          responseType: 'text'
+        });
+        const data = this.extractJsonFromHtml<ComickChapterPagesResponse>(response.data, 'sv-data');
+        const images = data.chapter?.images ?? data.chapter?.md_images ?? data.images ?? data.md_images ?? [];
 
-      return images
-        .map((image, index) => this.mapPage(image, index))
-        .filter((page): page is NormalizedPage => page !== null);
-    } catch (error) {
-      throw new ExternalApiError(getComickErrorMessage(error));
-    }
+        return images
+          .map((image, index) => this.mapPage(image, index))
+          .filter((page): page is NormalizedPage => page !== null);
+      } catch (error) {
+        throw new ExternalApiError(getComickErrorMessage(error));
+      }
+    });
   }
 
   private mapManga(comic: ComickComic, language: string): NormalizedManga {
@@ -353,11 +360,7 @@ export class ComickService implements MangaSource {
 
   private async getCanonicalMangaId(mangaId: string) {
     try {
-      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${mangaId}`, {
-        headers: getComickRequestHeaders(),
-        responseType: 'text'
-      });
-      const data = this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
+      const data = await this.requestComicData(mangaId);
       const comic = resolveComicDetails(data);
 
       return comic.slug ?? comic.hid ?? mangaId;
@@ -396,24 +399,26 @@ export class ComickService implements MangaSource {
       limit: number;
     }
   ): Promise<ComickChapter[]> {
-    const requestParams: Record<string, string | number> = {
-      page: params.page,
-      limit: params.limit
-    };
+    return this.cached(['requestChapters', mangaId, params], async () => {
+      const requestParams: Record<string, string | number> = {
+        page: params.page,
+        limit: params.limit
+      };
 
-    if (params.lang) {
-      requestParams.lang = params.lang;
-    }
-
-    const response = await httpClient.get<ComickChaptersResponse>(
-      `${this.baseUrl}/api/comics/${mangaId}/chapter-list`,
-      {
-        headers: getComickRequestHeaders(),
-        params: requestParams
+      if (params.lang) {
+        requestParams.lang = params.lang;
       }
-    );
 
-    return response.data.data ?? response.data.chapters ?? [];
+      const response = await httpClient.get<ComickChaptersResponse>(
+        `${this.baseUrl}/api/comics/${mangaId}/chapter-list`,
+        {
+          headers: getComickRequestHeaders(),
+          params: requestParams
+        }
+      );
+
+      return response.data.data ?? response.data.chapters ?? [];
+    });
   }
 
   private isLanguageMatch(value: string | null | undefined, language: string) {
@@ -427,17 +432,19 @@ export class ComickService implements MangaSource {
   }
 
   private async hasReadableChapters(mangaId: string, language: string) {
-    try {
-      const chapters = await this.requestChapters(mangaId, {
-        lang: language,
-        page: 1,
-        limit: 20
-      });
+    return this.cached(['hasReadableChapters', mangaId, language], async () => {
+      try {
+        const chapters = await this.requestChapters(mangaId, {
+          lang: language,
+          page: 1,
+          limit: 20
+        });
 
-      return chapters.some((chapter) => this.isReadableChapterInLanguage(chapter, language));
-    } catch {
-      return false;
-    }
+        return chapters.some((chapter) => this.isReadableChapterInLanguage(chapter, language));
+      } catch {
+        return false;
+      }
+    });
   }
 
   private async filterMangasWithReadableChapters(mangas: NormalizedManga[], language: string) {
@@ -475,6 +482,21 @@ export class ComickService implements MangaSource {
 
       throw error;
     }
+  }
+
+  private async requestComicData(id: string): Promise<ComickComicDetailsResponse | ComickComic> {
+    return this.cached(['requestComicData', id], async () => {
+      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${id}`, {
+        headers: getComickRequestHeaders(),
+        responseType: 'text'
+      });
+
+      return this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
+    });
+  }
+
+  private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {
+    return this.cache.getOrSet(createCacheKey(this.id, ...parts), loader) as Promise<TValue>;
   }
 
   private extractJsonFromHtml<TData>(html: string, elementId: string): TData {

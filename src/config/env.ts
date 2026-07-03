@@ -31,6 +31,8 @@ export const env = {
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   requestTimeoutMs: parseNumber(process.env.REQUEST_TIMEOUT_MS, 15000),
   scraperRequestDelayMs: parseNumber(process.env.SCRAPER_REQUEST_DELAY_MS, 350),
+  queryCacheTtlMs: parseNumber(process.env.QUERY_CACHE_TTL_MS, 120000),
+  queryCacheMaxEntries: parseNumber(process.env.QUERY_CACHE_MAX_ENTRIES, 500),
   mangadexBaseUrl: process.env.MANGADEX_BASE_URL ?? 'https://api.mangadex.org',
   comickBaseUrl: process.env.COMICK_BASE_URL ?? 'https://comick.live',
   comickImageBaseUrl: process.env.COMICK_IMAGE_BASE_URL ?? 'https://meo.comick.pictures',

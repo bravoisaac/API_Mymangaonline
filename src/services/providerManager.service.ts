@@ -14,9 +14,11 @@ import { InMangaProvider } from './providers/inManga.provider';
 import { LeerMangaProvider } from './providers/leerManga.provider';
 import { MyMangaOnlineProvider } from './providers/myMangaOnline.provider';
 import { TuMangaOnlineProvider } from './providers/tuMangaOnline.provider';
+import { createCacheKey, TtlCache } from '../utils/cache';
 
 export class ProviderManager {
   private readonly providers: Map<string, ManagedMangaProvider>;
+  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
 
   constructor() {
     const providerList: ManagedMangaProvider[] = [
@@ -49,7 +51,7 @@ export class ProviderManager {
 
   async searchProvider(providerId: string, query: string): Promise<MangaSearchResult[]> {
     const provider = this.getEnabledProvider(providerId);
-    return provider.search(query);
+    return this.cached(['searchProvider', providerId, query.trim().toLowerCase()], () => provider.search(query));
   }
 
   async searchAll(query: string): Promise<{
@@ -57,7 +59,20 @@ export class ProviderManager {
     results: ProviderSearchResult[];
     errors: ProviderErrorResult[];
   }> {
-    const providers = Array.from(this.providers.values()).filter((provider) => provider.enabled);
+    const cacheKey = createCacheKey('providerManager', 'searchAll', query.trim().toLowerCase());
+    const cachedResult = this.cache.get(cacheKey) as
+      | {
+          query: string;
+          results: ProviderSearchResult[];
+          errors: ProviderErrorResult[];
+        }
+      | undefined;
+
+    if (cachedResult) {
+      return cachedResult;
+    }
+
+    const providers = Array.from(this.providers.values()).filter((provider) => provider.enabled && provider.available);
     const results: ProviderSearchResult[] = [];
     const errors: ProviderErrorResult[] = [];
 
@@ -67,7 +82,7 @@ export class ProviderManager {
       }
 
       try {
-        const items = await provider.search(query);
+        const items = await this.searchProvider(provider.id, query);
         results.push({ providerId: provider.id, items });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown provider error';
@@ -76,26 +91,32 @@ export class ProviderManager {
       }
     }
 
-    return {
+    const payload = {
       query,
       results,
       errors
     };
+
+    if (errors.length === 0) {
+      this.cache.set(cacheKey, payload);
+    }
+
+    return payload;
   }
 
   async getMangaDetails(providerId: string, mangaId: string): Promise<MangaDetails> {
     const provider = this.getEnabledProvider(providerId);
-    return provider.getMangaDetails(mangaId);
+    return this.cached(['getMangaDetails', providerId, mangaId], () => provider.getMangaDetails(mangaId));
   }
 
   async getChapters(providerId: string, mangaId: string): Promise<MangaChapter[]> {
     const provider = this.getEnabledProvider(providerId);
-    return provider.getChapters(mangaId);
+    return this.cached(['getChapters', providerId, mangaId], () => provider.getChapters(mangaId));
   }
 
   async getChapterPages(providerId: string, chapterId: string): Promise<MangaPage[]> {
     const provider = this.getEnabledProvider(providerId);
-    return provider.getChapterPages(chapterId);
+    return this.cached(['getChapterPages', providerId, chapterId], () => provider.getChapterPages(chapterId));
   }
 
   private getProvider(providerId: string): ManagedMangaProvider {
@@ -111,8 +132,8 @@ export class ProviderManager {
   private getEnabledProvider(providerId: string): ManagedMangaProvider {
     const provider = this.getProvider(providerId);
 
-    if (!provider.enabled) {
-      throw new SourceNotImplementedError(`Provider "${providerId}" is disabled`);
+    if (!provider.enabled || !provider.available) {
+      throw new SourceNotImplementedError(`Provider "${providerId}" is disabled or unavailable`);
     }
 
     return provider;
@@ -126,6 +147,10 @@ export class ProviderManager {
     await new Promise((resolve) => {
       setTimeout(resolve, ms);
     });
+  }
+
+  private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {
+    return this.cache.getOrSet(createCacheKey('providerManager', ...parts), loader) as Promise<TValue>;
   }
 }
 
