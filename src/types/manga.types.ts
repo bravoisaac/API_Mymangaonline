@@ -24,6 +24,25 @@ export interface MangaLibraryOptions extends SourceOptions {
   limit?: number;
   tagIds?: string[];
   tagMode?: 'AND' | 'OR';
+  sort?: 'popular' | 'recentlyUpdated';
+}
+
+export interface AggregatedMangaLibraryPage {
+  source: 'all';
+  lang: string;
+  mangas: NormalizedManga[];
+  results: {
+    source: string;
+    mangas: NormalizedManga[];
+    total: number;
+  }[];
+  errors: {
+    source: string;
+    message: string;
+  }[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface NormalizedManga {

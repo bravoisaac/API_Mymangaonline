@@ -1,4 +1,5 @@
 import {
+  AggregatedMangaLibraryPage,
   ChapterOptions,
   ChapterPageOptions,
   MangaLibraryOptions,
@@ -123,6 +124,67 @@ export class MangaAggregatorService {
     return this.getMangaDexSource().getMangaLibrary(options);
   }
 
+  async getAggregatedMangaLibrary(options: MangaLibraryOptions = {}): Promise<AggregatedMangaLibraryPage> {
+    const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const limit = Math.min(Math.max(options.limit ?? 15, 1), 100);
+    const page = Math.max(options.page ?? 0, 0);
+    const offset = page * limit;
+    const hasMangaDexTagFilters = (options.tagIds?.length ?? 0) > 0;
+    const librarySources = Array.from(this.sources.values()).filter((source) => {
+      if (!source.enabled || typeof source.getMangaLibrary !== 'function') {
+        return false;
+      }
+
+      return !hasMangaDexTagFilters || source.id === 'mangadex';
+    });
+    const errors: SourceErrorResult[] = [];
+
+    if (librarySources.length === 0) {
+      throw new SourceNotImplementedError('No enabled sources support manga library lists');
+    }
+
+    const settledResults = await Promise.all(
+      librarySources.map(async (source) => {
+        try {
+          const result = await source.getMangaLibrary?.({
+            ...options,
+            lang,
+            limit,
+            page
+          });
+
+          return {
+            source: source.id,
+            mangas: result?.mangas ?? [],
+            total: result?.total ?? 0
+          };
+        } catch (error) {
+          errors.push({
+            source: source.id,
+            message: error instanceof Error ? error.message : 'Unknown source error'
+          });
+
+          return null;
+        }
+      })
+    );
+    const results = settledResults.filter(
+      (result): result is { source: string; mangas: NormalizedManga[]; total: number } => result !== null
+    );
+    const mangas = this.mergeLibraryResults(results).slice(0, limit);
+
+    return {
+      source: 'all',
+      lang,
+      mangas,
+      results,
+      errors,
+      total: results.reduce((total, result) => total + result.total, 0),
+      limit,
+      offset
+    };
+  }
+
   async getMangaTags(options?: SourceOptions): Promise<NormalizedMangaTag[]> {
     return this.getMangaDexSource().getMangaTags(options?.lang);
   }
@@ -145,6 +207,31 @@ export class MangaAggregatorService {
     }
 
     return source;
+  }
+
+  private mergeLibraryResults(results: { source: string; mangas: NormalizedManga[] }[]) {
+    const merged: NormalizedManga[] = [];
+    const seenMangaKeys = new Set<string>();
+    const maxSourceLength = Math.max(0, ...results.map((result) => result.mangas.length));
+
+    for (let index = 0; index < maxSourceLength; index += 1) {
+      results.forEach((result) => {
+        const manga = result.mangas[index];
+
+        if (!manga) {
+          return;
+        }
+
+        const mangaKey = `${manga.source}:${manga.id}`;
+
+        if (!seenMangaKeys.has(mangaKey)) {
+          seenMangaKeys.add(mangaKey);
+          merged.push(manga);
+        }
+      });
+    }
+
+    return merged;
   }
 }
 

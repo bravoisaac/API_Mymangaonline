@@ -39,6 +39,21 @@ function getTagMode(value: unknown): 'AND' | 'OR' {
   return getQueryString(value) === 'OR' ? 'OR' : 'AND';
 }
 
+function getLibrarySort(value: unknown): 'popular' | 'recentlyUpdated' {
+  return getQueryString(value) === 'recentlyUpdated' ? 'recentlyUpdated' : 'popular';
+}
+
+function getLibraryQueryOptions(request: Request) {
+  return {
+    lang: getLanguage(request.query.lang),
+    page: getQueryNumber(request.query.page, 0, 0, 10000),
+    limit: getQueryNumber(request.query.limit, 15, 1, 100),
+    tagIds: getQueryStringArray(request.query.tagIds ?? request.query['tagIds[]']),
+    tagMode: getTagMode(request.query.tagMode),
+    sort: getLibrarySort(request.query.sort)
+  };
+}
+
 function getQuality(value: unknown): ChapterQuality {
   const quality = getQueryString(value);
 
@@ -134,12 +149,17 @@ export async function searchAllManga(request: Request, response: Response, next:
 
 export async function getMangaLibrary(request: Request, response: Response, next: NextFunction) {
   try {
-    const lang = getLanguage(request.query.lang);
-    const page = getQueryNumber(request.query.page, 0, 0, 10000);
-    const limit = getQueryNumber(request.query.limit, 15, 1, 100);
-    const tagIds = getQueryStringArray(request.query.tagIds ?? request.query['tagIds[]']);
-    const tagMode = getTagMode(request.query.tagMode);
-    const payload = await mangaAggregatorService.getMangaLibrary({ lang, page, limit, tagIds, tagMode });
+    const payload = await mangaAggregatorService.getMangaLibrary(getLibraryQueryOptions(request));
+
+    response.json(payload);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getAggregatedMangaLibrary(request: Request, response: Response, next: NextFunction) {
+  try {
+    const payload = await mangaAggregatorService.getAggregatedMangaLibrary(getLibraryQueryOptions(request));
 
     response.json(payload);
   } catch (error) {

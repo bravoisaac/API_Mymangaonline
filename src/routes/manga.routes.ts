@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import {
   getChapterPages,
+  getAggregatedMangaLibrary,
   getMangaLibrary,
   getMangaChapters,
   getMangaDetails,
@@ -16,6 +17,7 @@ export const mangaRoutes = Router();
 mangaRoutes.get('/search/all', searchAllManga);
 mangaRoutes.get('/search/:providerId', searchProviderManga);
 mangaRoutes.get('/search', searchManga);
+mangaRoutes.get('/library/all', getAggregatedMangaLibrary);
 mangaRoutes.get('/library', getMangaLibrary);
 mangaRoutes.get('/tags', getMangaTags);
 mangaRoutes.get('/:source/:id/chapters', getMangaChapters);
