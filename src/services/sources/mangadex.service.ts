@@ -236,6 +236,7 @@ export class MangaDexService implements MangaSource {
     const page = Math.max(options.page ?? 0, 0);
     const offset = page * limit;
     const tagIds = options.tagIds ?? [];
+    const sort = options.sort ?? 'popular';
     const params: Record<string, string | string[] | number | boolean> = {
       limit,
       offset,
@@ -243,7 +244,7 @@ export class MangaDexService implements MangaSource {
       'availableTranslatedLanguage[]': [lang],
       'contentRating[]': ['safe', 'suggestive'],
       hasAvailableChapters: true,
-      'order[followedCount]': 'desc'
+      [sort === 'recentlyUpdated' ? 'order[latestUploadedChapter]' : 'order[followedCount]']: 'desc'
     };
 
     if (tagIds.length > 0) {
