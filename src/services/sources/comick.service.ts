@@ -182,6 +182,21 @@ function getComickLanguageVariants(language: string) {
   return [normalizedLanguage];
 }
 
+function isSpanishLanguage(language: string) {
+  return getComickLanguageVariants(language).some((variant) => variant === 'es' || variant === 'es-419');
+}
+
+const COMICK_SPANISH_DISCOVERY_QUERIES = [
+  'leveling',
+  'villain',
+  'duke',
+  'sword',
+  'magic',
+  'dragon',
+  'reincarnation',
+  'romance'
+];
+
 function resolveComicDetails(data: ComickComicDetailsResponse | ComickComic): ComickComic {
   return isComickComicDetailsResponse(data) && data.comic ? data.comic : (data as ComickComic);
 }
@@ -258,7 +273,13 @@ export class ComickService implements MangaSource {
         );
         const comics = resolveSearchComics(data);
         const readableComics = await this.filterComicsWithReadableLanguage(comics, lang);
-        const mappedMangas = readableComics.map((comic) => this.mapManga(comic, lang));
+        const discoveryComics =
+          isSpanishLanguage(lang) && readableComics.length < offset + limit
+            ? await this.getSpanishDiscoveryComics(lang, sort)
+            : [];
+        const mappedMangas = this.mergeComics(readableComics, discoveryComics).map((comic) =>
+          this.mapManga(comic, lang)
+        );
 
         return {
           source: this.id,
@@ -480,12 +501,48 @@ export class ComickService implements MangaSource {
       .some((value) => value.toLowerCase() === normalizedId);
   }
 
+  private async getSpanishDiscoveryComics(language: string, sort: MangaLibraryOptions['sort']) {
+    const orderBy = sort === 'recentlyUpdated' ? 'last_chapter_at' : 'user_follow_count';
+    const batches = await Promise.all(
+      COMICK_SPANISH_DISCOVERY_QUERIES.map(async (query) => {
+        try {
+          const data = await this.requestSearch(query, 20, orderBy);
+          const comics = resolveSearchComics(data);
+
+          return this.filterComicsWithReadableLanguage(comics, language);
+        } catch {
+          return [];
+        }
+      })
+    );
+
+    return this.mergeComics(...batches);
+  }
+
+  private mergeComics(...comicLists: ComickComic[][]) {
+    const merged: ComickComic[] = [];
+    const seenComicIds = new Set<string>();
+
+    comicLists.flat().forEach((comic) => {
+      const comicId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
+
+      if (!comicId || seenComicIds.has(comicId)) {
+        return;
+      }
+
+      seenComicIds.add(comicId);
+      merged.push(comic);
+    });
+
+    return merged;
+  }
+
   private async filterComicsWithReadableLanguage(comics: ComickComic[], language: string) {
     return filterAsyncWithConcurrency(comics, async (comic) => {
       const metadataMatch = this.hasLanguageMetadataMatch(comic, language);
 
-      if (metadataMatch !== null) {
-        return metadataMatch;
+      if (metadataMatch === false) {
+        return false;
       }
 
       const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
@@ -497,7 +554,7 @@ export class ComickService implements MangaSource {
       const chapters = await this.getReadableChapters(mangaId, {
         lang: language,
         page: 1,
-        limit: 1
+        limit: 100
       });
 
       return chapters.length > 0;
@@ -596,7 +653,16 @@ export class ComickService implements MangaSource {
     }
 
     if (params.lang) {
-      return [];
+      try {
+        const fallbackChapters = await this.requestChapters(mangaId, {
+          page: params.page,
+          limit: params.limit
+        });
+
+        return fallbackChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, requestedLanguage));
+      } catch {
+        return [];
+      }
     }
 
     const fallbackChapters = await this.requestChapters(mangaId, {
