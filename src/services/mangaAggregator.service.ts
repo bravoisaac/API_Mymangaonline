@@ -129,9 +129,15 @@ export class MangaAggregatorService {
     const limit = Math.min(Math.max(options.limit ?? 15, 1), 100);
     const page = Math.max(options.page ?? 0, 0);
     const offset = page * limit;
+    const sourceLimit = Math.min(Math.max((page + 1) * limit, limit * 4), 100);
     const hasMangaDexTagFilters = (options.tagIds?.length ?? 0) > 0;
+    const requestedSource = options.source ?? 'all';
     const librarySources = Array.from(this.sources.values()).filter((source) => {
       if (!source.enabled || typeof source.getMangaLibrary !== 'function') {
+        return false;
+      }
+
+      if (requestedSource !== 'all' && source.id !== requestedSource) {
         return false;
       }
 
@@ -149,8 +155,8 @@ export class MangaAggregatorService {
           const result = await source.getMangaLibrary?.({
             ...options,
             lang,
-            limit,
-            page
+            limit: sourceLimit,
+            page: 0
           });
 
           return {
@@ -171,7 +177,7 @@ export class MangaAggregatorService {
     const results = settledResults.filter(
       (result): result is { source: string; mangas: NormalizedManga[]; total: number } => result !== null
     );
-    const mangas = this.mergeLibraryResults(results).slice(0, limit);
+    const mangas = this.mergeLibraryResults(results).slice(offset, offset + limit);
 
     return {
       source: 'all',

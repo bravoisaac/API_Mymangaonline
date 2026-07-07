@@ -43,6 +43,12 @@ function getLibrarySort(value: unknown): 'popular' | 'recentlyUpdated' {
   return getQueryString(value) === 'recentlyUpdated' ? 'recentlyUpdated' : 'popular';
 }
 
+function getLibrarySource(value: unknown): 'all' | 'mangadex' | 'comick' {
+  const source = getQueryString(value);
+
+  return source === 'mangadex' || source === 'comick' ? source : 'all';
+}
+
 function getLibraryQueryOptions(request: Request) {
   return {
     lang: getLanguage(request.query.lang),
@@ -50,7 +56,8 @@ function getLibraryQueryOptions(request: Request) {
     limit: getQueryNumber(request.query.limit, 15, 1, 100),
     tagIds: getQueryStringArray(request.query.tagIds ?? request.query['tagIds[]']),
     tagMode: getTagMode(request.query.tagMode),
-    sort: getLibrarySort(request.query.sort)
+    sort: getLibrarySort(request.query.sort),
+    source: getLibrarySource(request.query.source)
   };
 }
 

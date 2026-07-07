@@ -25,6 +25,7 @@ export interface MangaLibraryOptions extends SourceOptions {
   tagIds?: string[];
   tagMode?: 'AND' | 'OR';
   sort?: 'popular' | 'recentlyUpdated';
+  source?: 'all' | 'mangadex' | 'comick';
 }
 
 export interface AggregatedMangaLibraryPage {

@@ -194,7 +194,27 @@ const COMICK_SPANISH_DISCOVERY_QUERIES = [
   'magic',
   'dragon',
   'reincarnation',
-  'romance'
+  'romance',
+  'academy',
+  'hunter',
+  'tower',
+  'ranker',
+  'return',
+  'player',
+  'dungeon',
+  'necromancer',
+  'emperor',
+  'martial',
+  'knight',
+  'princess',
+  'villainess',
+  'marriage',
+  'solo',
+  'max',
+  'god',
+  'hero',
+  'legend',
+  'northern'
 ];
 
 function resolveComicDetails(data: ComickComicDetailsResponse | ComickComic): ComickComic {
@@ -264,7 +284,7 @@ export class ComickService implements MangaSource {
     const requestLimit = Math.min(Math.max((page + 1) * limit * 2, limit), 100);
     const sort = options.sort ?? 'popular';
 
-    return this.cached(['getMangaLibrary', lang, limit, page, sort], async () => {
+    return this.cached(['getMangaLibrary', 'discovery-v3', lang, limit, page, sort], async () => {
       try {
         const data = await this.requestSearch(
           '',
@@ -274,7 +294,7 @@ export class ComickService implements MangaSource {
         const comics = resolveSearchComics(data);
         const readableComics = await this.filterComicsWithReadableLanguage(comics, lang);
         const discoveryComics =
-          isSpanishLanguage(lang) && readableComics.length < offset + limit
+          isSpanishLanguage(lang)
             ? await this.getSpanishDiscoveryComics(lang, sort)
             : [];
         const mappedMangas = this.mergeComics(readableComics, discoveryComics).map((comic) =>
@@ -503,18 +523,19 @@ export class ComickService implements MangaSource {
 
   private async getSpanishDiscoveryComics(language: string, sort: MangaLibraryOptions['sort']) {
     const orderBy = sort === 'recentlyUpdated' ? 'last_chapter_at' : 'user_follow_count';
-    const batches = await Promise.all(
-      COMICK_SPANISH_DISCOVERY_QUERIES.map(async (query) => {
-        try {
-          const data = await this.requestSearch(query, 20, orderBy);
-          const comics = resolveSearchComics(data);
+    const batches: ComickComic[][] = [];
 
-          return this.filterComicsWithReadableLanguage(comics, language);
-        } catch {
-          return [];
-        }
-      })
-    );
+    for (const query of COMICK_SPANISH_DISCOVERY_QUERIES) {
+      try {
+        const data = await this.requestSearch(query, 20, orderBy);
+        const comics = resolveSearchComics(data);
+        const readableComics = await this.filterComicsWithReadableLanguage(comics, language);
+
+        batches.push(readableComics);
+      } catch {
+        // Continue with the next discovery term; Comick may reject individual broad searches.
+      }
+    }
 
     return this.mergeComics(...batches);
   }
@@ -541,8 +562,8 @@ export class ComickService implements MangaSource {
     return filterAsyncWithConcurrency(comics, async (comic) => {
       const metadataMatch = this.hasLanguageMetadataMatch(comic, language);
 
-      if (metadataMatch === false) {
-        return false;
+      if (metadataMatch !== null) {
+        return metadataMatch;
       }
 
       const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
