@@ -216,6 +216,44 @@ const COMICK_SPANISH_DISCOVERY_QUERIES = [
   'legend',
   'northern'
 ];
+const COMICK_LIBRARY_LOOKAHEAD_PAGES = 2;
+const COMICK_DISCOVERY_QUERY_LIMIT = 50;
+const COMICK_CHAPTER_SCAN_PAGES = 6;
+const COMICK_CHAPTER_CACHE_VERSION = 'scan-v3';
+const COMICK_REQUEST_ATTEMPTS = 3;
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function shouldRetryComickRequest(error: unknown) {
+  if (!(error instanceof AxiosError)) {
+    return false;
+  }
+
+  const status = error.response?.status;
+
+  return status === 429 || (typeof status === 'number' && status >= 500) || (!status && Boolean(error.code));
+}
+
+function getComickRetryDelay(error: unknown, attempt: number) {
+  const retryAfterHeader = error instanceof AxiosError ? error.response?.headers?.['retry-after'] : undefined;
+  const retryAfterValue = Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader;
+  const retryAfterSeconds =
+    typeof retryAfterValue === 'string' && retryAfterValue.trim() ? Number(retryAfterValue) : Number.NaN;
+
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(retryAfterSeconds * 1000, 15000);
+  }
+
+  if (error instanceof AxiosError && error.response?.status === 429) {
+    return env.scraperRequestDelayMs * 8 * (attempt + 1);
+  }
+
+  return env.scraperRequestDelayMs * (attempt + 2);
+}
 
 function resolveComicDetails(data: ComickComicDetailsResponse | ComickComic): ComickComic {
   return isComickComicDetailsResponse(data) && data.comic ? data.comic : (data as ComickComic);
@@ -254,6 +292,7 @@ export class ComickService implements MangaSource {
   private readonly baseUrl = env.comickBaseUrl;
   private readonly imageBaseUrl = env.comickImageBaseUrl;
   private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
+  private requestQueue: Promise<void> = Promise.resolve();
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -284,7 +323,7 @@ export class ComickService implements MangaSource {
     const requestLimit = Math.min(Math.max((page + 1) * limit * 2, limit), 100);
     const sort = options.sort ?? 'popular';
 
-    return this.cached(['getMangaLibrary', 'discovery-v3', lang, limit, page, sort], async () => {
+    return this.cached(['getMangaLibrary', 'discovery-v8', lang, limit, page, sort], async () => {
       try {
         const data = await this.requestSearch(
           '',
@@ -292,10 +331,13 @@ export class ComickService implements MangaSource {
           sort === 'recentlyUpdated' ? 'last_chapter_at' : 'user_follow_count'
         );
         const comics = resolveSearchComics(data);
-        const readableComics = await this.filterComicsWithReadableLanguage(comics, lang);
+        const readableComics = await this.filterComicsWithReadableLanguage(comics, lang, {
+          validateUnknownMetadata: false
+        });
+        const discoveryTarget = offset + limit * COMICK_LIBRARY_LOOKAHEAD_PAGES;
         const discoveryComics =
-          isSpanishLanguage(lang)
-            ? await this.getSpanishDiscoveryComics(lang, sort)
+          isSpanishLanguage(lang) && readableComics.length < discoveryTarget
+            ? await this.getSpanishDiscoveryComics(lang, sort, discoveryTarget, readableComics)
             : [];
         const mappedMangas = this.mergeComics(readableComics, discoveryComics).map((comic) =>
           this.mapManga(comic, lang)
@@ -342,7 +384,7 @@ export class ComickService implements MangaSource {
     const limit = options.limit ?? 100;
     const page = Math.floor((options.offset ?? 0) / limit) + 1;
 
-    return this.cached(['getChapters', mangaId, lang, page, limit], async () => {
+    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, page, limit], async () => {
       try {
         const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
         const chapters = await this.getReadableChapters(canonicalMangaId, {
@@ -363,10 +405,12 @@ export class ComickService implements MangaSource {
   async getChapterPages(chapterId: string, _options?: ChapterPageOptions): Promise<NormalizedPage[]> {
     return this.cached(['getChapterPages', chapterId], async () => {
       try {
-        const response = await httpClient.get<string>(`${this.baseUrl}/comic/${chapterId}`, {
-          headers: getComickRequestHeaders(),
-          responseType: 'text'
-        });
+        const response = await this.runComickRequest(() =>
+          httpClient.get<string>(`${this.baseUrl}/comic/${chapterId}`, {
+            headers: getComickRequestHeaders(),
+            responseType: 'text'
+          })
+        );
         const data = this.extractJsonFromHtml<ComickChapterPagesResponse>(response.data, 'sv-data');
         const images = data.chapter?.images ?? data.chapter?.md_images ?? data.images ?? data.md_images ?? [];
 
@@ -521,17 +565,28 @@ export class ComickService implements MangaSource {
       .some((value) => value.toLowerCase() === normalizedId);
   }
 
-  private async getSpanishDiscoveryComics(language: string, sort: MangaLibraryOptions['sort']) {
+  private async getSpanishDiscoveryComics(
+    language: string,
+    sort: MangaLibraryOptions['sort'],
+    targetTotal: number,
+    seedComics: ComickComic[] = []
+  ) {
     const orderBy = sort === 'recentlyUpdated' ? 'last_chapter_at' : 'user_follow_count';
     const batches: ComickComic[][] = [];
 
     for (const query of COMICK_SPANISH_DISCOVERY_QUERIES) {
       try {
-        const data = await this.requestSearch(query, 20, orderBy);
+        const data = await this.requestSearch(query, COMICK_DISCOVERY_QUERY_LIMIT, orderBy);
         const comics = resolveSearchComics(data);
-        const readableComics = await this.filterComicsWithReadableLanguage(comics, language);
+        const readableComics = await this.filterComicsWithReadableLanguage(comics, language, {
+          validateUnknownMetadata: false
+        });
 
         batches.push(readableComics);
+
+        if (this.mergeComics(seedComics, ...batches).length >= targetTotal) {
+          break;
+        }
       } catch {
         // Continue with the next discovery term; Comick may reject individual broad searches.
       }
@@ -558,12 +613,22 @@ export class ComickService implements MangaSource {
     return merged;
   }
 
-  private async filterComicsWithReadableLanguage(comics: ComickComic[], language: string) {
+  private async filterComicsWithReadableLanguage(
+    comics: ComickComic[],
+    language: string,
+    options: { validateUnknownMetadata?: boolean } = {}
+  ) {
+    const validateUnknownMetadata = options.validateUnknownMetadata ?? true;
+
     return filterAsyncWithConcurrency(comics, async (comic) => {
       const metadataMatch = this.hasLanguageMetadataMatch(comic, language);
 
       if (metadataMatch !== null) {
         return metadataMatch;
+      }
+
+      if (!validateUnknownMetadata) {
+        return false;
       }
 
       const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
@@ -651,47 +716,57 @@ export class ComickService implements MangaSource {
     }
   ) {
     const requestedLanguage = params.lang ?? env.mangadexDefaultLanguage;
-    const languageVariants = params.lang ? getComickLanguageVariants(requestedLanguage) : [undefined];
 
-    for (const language of languageVariants) {
-      try {
-        const localizedChapters = await this.requestChapters(mangaId, {
-          ...params,
-          lang: language
-        });
-        const readableLocalizedChapters = localizedChapters.filter((chapter) =>
-          this.isReadableChapterInLanguage(chapter, requestedLanguage)
-        );
-
-        if (readableLocalizedChapters.length > 0) {
-          return readableLocalizedChapters;
-        }
-      } catch (error) {
-        if (!params.lang) {
-          throw error;
-        }
-      }
-    }
-
-    if (params.lang) {
-      try {
-        const fallbackChapters = await this.requestChapters(mangaId, {
-          page: params.page,
-          limit: params.limit
-        });
-
-        return fallbackChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, requestedLanguage));
-      } catch {
-        return [];
-      }
-    }
-
-    const fallbackChapters = await this.requestChapters(mangaId, {
+    return this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
       page: params.page,
       limit: params.limit
     });
+  }
 
-    return fallbackChapters.filter((chapter) => this.isReadableChapter(chapter));
+  private async getReadableChaptersFromPages(
+    mangaId: string,
+    language: string,
+    params: {
+      lang?: string;
+      page: number;
+      limit: number;
+    }
+  ) {
+    const chapters: ComickChapter[] = [];
+    const seenChapterIds = new Set<string>();
+    const startPage = Math.max(params.page, 1);
+    const limit = Math.max(params.limit, 1);
+
+    for (let page = startPage; page < startPage + COMICK_CHAPTER_SCAN_PAGES; page += 1) {
+      if (page > startPage) {
+        await wait(env.scraperRequestDelayMs);
+      }
+
+      const nextChapters = await this.requestChapters(mangaId, {
+        ...params,
+        page,
+        limit
+      });
+
+      nextChapters
+        .filter((chapter) => this.isReadableChapterInLanguage(chapter, language))
+        .forEach((chapter) => {
+          const chapterId = chapter.hid ?? String(chapter.id ?? `${chapter.chap ?? ''}:${chapter.lang ?? ''}`);
+
+          if (seenChapterIds.has(chapterId)) {
+            return;
+          }
+
+          seenChapterIds.add(chapterId);
+          chapters.push(chapter);
+        });
+
+      if (nextChapters.length < limit) {
+        break;
+      }
+    }
+
+    return chapters;
   }
 
   private async requestChapters(
@@ -712,16 +787,53 @@ export class ComickService implements MangaSource {
         requestParams.lang = params.lang;
       }
 
-      const response = await httpClient.get<ComickChaptersResponse>(
-        `${this.baseUrl}/api/comics/${mangaId}/chapter-list`,
-        {
-          headers: getComickRequestHeaders(),
-          params: requestParams
-        }
-      );
+      for (let attempt = 0; attempt < COMICK_REQUEST_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await this.runComickRequest(() =>
+            httpClient.get<ComickChaptersResponse>(`${this.baseUrl}/api/comics/${mangaId}/chapter-list`, {
+              headers: getComickRequestHeaders(),
+              params: requestParams
+            })
+          );
 
-      return response.data.data ?? response.data.chapters ?? [];
+          return response.data.data ?? response.data.chapters ?? [];
+        } catch (error) {
+          if (attempt >= COMICK_REQUEST_ATTEMPTS - 1 || !shouldRetryComickRequest(error)) {
+            throw error;
+          }
+
+          await wait(getComickRetryDelay(error, attempt));
+        }
+      }
+
+      return [];
     });
+  }
+
+  private async requestSearchFromBaseUrl(
+    baseUrl: string,
+    params: Record<string, string | number>
+  ): Promise<ComickSearchResponse> {
+    for (let attempt = 0; attempt < COMICK_REQUEST_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.runComickRequest(() =>
+          httpClient.get<ComickSearchResponse>(`${baseUrl}/api/search`, {
+            headers: getComickRequestHeaders(),
+            params
+          })
+        );
+
+        return response.data;
+      } catch (error) {
+        if (attempt >= COMICK_REQUEST_ATTEMPTS - 1 || !shouldRetryComickRequest(error)) {
+          throw error;
+        }
+
+        await wait(getComickRetryDelay(error, attempt));
+      }
+    }
+
+    return [];
   }
 
   private isLanguageMatch(value: string | null | undefined, language: string) {
@@ -757,21 +869,11 @@ export class ComickService implements MangaSource {
     };
 
     try {
-      const response = await httpClient.get<ComickSearchResponse>(`${this.baseUrl}/api/search`, {
-        headers: getComickRequestHeaders(),
-        params
-      });
-
-      return response.data;
+      return await this.requestSearchFromBaseUrl(this.baseUrl, params);
     } catch (error) {
       if (error instanceof AxiosError && (error.response?.status === 403 || error.response?.status === 404)) {
         const fallbackBaseUrl = this.baseUrl === 'https://comick.art' ? 'https://comick.live' : 'https://comick.art';
-        const response = await httpClient.get<ComickSearchResponse>(`${fallbackBaseUrl}/api/search`, {
-          headers: getComickRequestHeaders(),
-          params
-        });
-
-        return response.data;
+        return this.requestSearchFromBaseUrl(fallbackBaseUrl, params);
       }
 
       throw error;
@@ -780,13 +882,32 @@ export class ComickService implements MangaSource {
 
   private async requestComicData(id: string): Promise<ComickComicDetailsResponse | ComickComic> {
     return this.cached(['requestComicData', id], async () => {
-      const response = await httpClient.get<string>(`${this.baseUrl}/comic/${id}`, {
-        headers: getComickRequestHeaders(),
-        responseType: 'text'
-      });
+      const response = await this.runComickRequest(() =>
+        httpClient.get<string>(`${this.baseUrl}/comic/${id}`, {
+          headers: getComickRequestHeaders(),
+          responseType: 'text'
+        })
+      );
 
       return this.extractJsonFromHtml<ComickComicDetailsResponse | ComickComic>(response.data, 'comic-data');
     });
+  }
+
+  private async runComickRequest<TValue>(loader: () => Promise<TValue>): Promise<TValue> {
+    const run = this.requestQueue.then(async () => {
+      try {
+        return await loader();
+      } finally {
+        await wait(env.scraperRequestDelayMs);
+      }
+    });
+
+    this.requestQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return run;
   }
 
   private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {

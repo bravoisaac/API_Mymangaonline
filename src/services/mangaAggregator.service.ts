@@ -129,9 +129,10 @@ export class MangaAggregatorService {
     const limit = Math.min(Math.max(options.limit ?? 15, 1), 100);
     const page = Math.max(options.page ?? 0, 0);
     const offset = page * limit;
+    const requestedSource = options.source ?? 'all';
+    const isSingleSourceRequest = requestedSource !== 'all';
     const sourceLimit = Math.min(Math.max((page + 1) * limit, limit * 4), 100);
     const hasMangaDexTagFilters = (options.tagIds?.length ?? 0) > 0;
-    const requestedSource = options.source ?? 'all';
     const librarySources = Array.from(this.sources.values()).filter((source) => {
       if (!source.enabled || typeof source.getMangaLibrary !== 'function') {
         return false;
@@ -155,8 +156,8 @@ export class MangaAggregatorService {
           const result = await source.getMangaLibrary?.({
             ...options,
             lang,
-            limit: sourceLimit,
-            page: 0
+            limit: isSingleSourceRequest ? limit : sourceLimit,
+            page: isSingleSourceRequest ? page : 0
           });
 
           return {
@@ -177,7 +178,14 @@ export class MangaAggregatorService {
     const results = settledResults.filter(
       (result): result is { source: string; mangas: NormalizedManga[]; total: number } => result !== null
     );
-    const mangas = this.mergeLibraryResults(results).slice(offset, offset + limit);
+
+    if (isSingleSourceRequest && results.length === 0 && errors.length > 0) {
+      throw new AppError(errors[0].message, 502);
+    }
+
+    const mangas = isSingleSourceRequest
+      ? results.flatMap((result) => result.mangas).slice(0, limit)
+      : this.mergeLibraryResults(results).slice(offset, offset + limit);
 
     return {
       source: 'all',
