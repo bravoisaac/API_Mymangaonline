@@ -153,10 +153,12 @@ export class MangaAggregatorService {
     const settledResults = await Promise.all(
       librarySources.map(async (source) => {
         try {
+          const sourceRequestLimit =
+            isSingleSourceRequest || source.id !== 'comick' ? (isSingleSourceRequest ? limit : sourceLimit) : limit;
           const result = await source.getMangaLibrary?.({
             ...options,
             lang,
-            limit: isSingleSourceRequest ? limit : sourceLimit,
+            limit: sourceRequestLimit,
             page: isSingleSourceRequest ? page : 0
           });
 

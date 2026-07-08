@@ -81,6 +81,21 @@ type AtHomeResponse = {
 };
 
 const MANGADEX_UPLOADS_URL = 'https://uploads.mangadex.org';
+const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v3';
+
+function getMangaDexLanguageVariants(language: string) {
+  const normalizedLanguage = language.toLowerCase();
+
+  if (normalizedLanguage === 'es' || normalizedLanguage === 'es-419') {
+    return ['es', 'es-la'];
+  }
+
+  if (normalizedLanguage === 'pt-br') {
+    return ['pt-br', 'pt'];
+  }
+
+  return [normalizedLanguage];
+}
 
 function getRelationship(entity: MangaDexEntity<unknown>, type: string) {
   return entity.relationships?.find((relationship) => relationship.type === type);
@@ -114,7 +129,9 @@ function getGenres(entity: MangaDexEntity<MangaAttributes>, language: string) {
 function getMangaDexErrorMessage(error: unknown) {
   if (error instanceof AxiosError) {
     const status = error.response?.status;
-    return status ? `MangaDex request failed with status ${status}` : 'MangaDex request failed';
+    const detail = error.code ?? error.message;
+
+    return status ? `MangaDex request failed with status ${status}` : `MangaDex request failed: ${detail}`;
   }
 
   return 'MangaDex request failed';
@@ -131,16 +148,19 @@ export class MangaDexService implements MangaSource {
 
   async searchManga(query: string, options: SearchOptions = {}): Promise<NormalizedManga[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const languageVariants = getMangaDexLanguageVariants(lang);
     const limit = options.limit ?? 20;
 
-    return this.cached(['searchManga', query.trim().toLowerCase(), lang, limit], async () => {
+    return this.cached(
+      ['searchManga', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, query.trim().toLowerCase(), lang, limit],
+      async () => {
       try {
         const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
           params: {
             title: query,
             limit,
             'includes[]': ['cover_art'],
-            'availableTranslatedLanguage[]': [lang],
+            'availableTranslatedLanguage[]': languageVariants,
             'contentRating[]': ['safe', 'suggestive'],
             hasAvailableChapters: true,
             'order[relevance]': 'desc'
@@ -184,24 +204,24 @@ export class MangaDexService implements MangaSource {
 
   async getChapters(mangaId: string, options: ChapterOptions = {}): Promise<NormalizedChapter[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const languageVariants = getMangaDexLanguageVariants(lang);
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
 
-    return this.cached(['getChapters', mangaId, lang, limit, offset], async () => {
+    return this.cached(['getChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, lang, limit, offset], async () => {
       try {
-        const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(
-          `${this.baseUrl}/manga/${mangaId}/feed`,
-          {
-            params: {
-              limit,
-              offset,
-              'translatedLanguage[]': [lang],
-              'order[chapter]': 'asc'
-            }
-          }
-        );
+        const localizedChapters = await this.requestChapters(mangaId, languageVariants, limit, offset);
+        const readableLocalizedChapters = localizedChapters
+          .map((entity) => this.mapChapter(entity, mangaId, lang))
+          .filter((chapter) => chapter.pages > 0);
 
-        return response.data.data
+        if (readableLocalizedChapters.length > 0) {
+          return readableLocalizedChapters;
+        }
+
+        const fallbackChapters = await this.requestChapters(mangaId, undefined, limit, offset);
+
+        return fallbackChapters
           .map((entity) => this.mapChapter(entity, mangaId, lang))
           .filter((chapter) => chapter.pages > 0);
       } catch (error) {
@@ -232,6 +252,7 @@ export class MangaDexService implements MangaSource {
 
   async getMangaLibrary(options: MangaLibraryOptions = {}): Promise<NormalizedMangaLibraryPage> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
+    const languageVariants = getMangaDexLanguageVariants(lang);
     const limit = Math.min(Math.max(options.limit ?? 15, 1), 100);
     const page = Math.max(options.page ?? 0, 0);
     const offset = page * limit;
@@ -241,7 +262,7 @@ export class MangaDexService implements MangaSource {
       limit,
       offset,
       'includes[]': ['cover_art'],
-      'availableTranslatedLanguage[]': [lang],
+      'availableTranslatedLanguage[]': languageVariants,
       'contentRating[]': ['safe', 'suggestive'],
       hasAvailableChapters: true,
       [sort === 'recentlyUpdated' ? 'order[latestUploadedChapter]' : 'order[followedCount]']: 'desc'
@@ -255,13 +276,12 @@ export class MangaDexService implements MangaSource {
       params.includedTagsMode = options.tagMode ?? 'AND';
     }
 
-    return this.cached(['getMangaLibrary', params], async () => {
+    return this.cached(['getMangaLibrary', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, params], async () => {
       try {
         const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
           params
         });
-        const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
-        const readableMangas = await this.filterMangasWithReadableChapters(mappedMangas, lang);
+        const readableMangas = response.data.data.map((entity) => this.mapLibraryManga(entity, lang));
 
         return {
           source: this.id,
@@ -312,6 +332,21 @@ export class MangaDexService implements MangaSource {
     };
   }
 
+  private mapLibraryManga(entity: MangaDexEntity<MangaAttributes>, language: string): NormalizedManga {
+    return {
+      id: entity.id,
+      source: this.id,
+      title: getLocalizedText(entity.attributes.title, language),
+      alternativeTitles: [],
+      description: '',
+      cover: getCoverUrl(entity),
+      status: normalizeStatus(entity.attributes.status),
+      year: entity.attributes.year ?? null,
+      genres: [],
+      language
+    };
+  }
+
   private mapChapter(entity: MangaDexEntity<ChapterAttributes>, mangaId: string, language: string): NormalizedChapter {
     return {
       id: entity.id,
@@ -341,14 +376,39 @@ export class MangaDexService implements MangaSource {
     return readableChapters.length;
   }
 
+  private async requestChapters(
+    mangaId: string,
+    languages: string[] | undefined,
+    limit: number,
+    offset: number
+  ) {
+    const params: Record<string, string | string[] | number> = {
+      limit,
+      offset,
+      'order[chapter]': 'asc'
+    };
+
+    if (languages?.length) {
+      params['translatedLanguage[]'] = languages;
+    }
+
+    const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
+      params
+    });
+
+    return response.data.data;
+  }
+
   private async hasReadableChapters(mangaId: string, language: string) {
-    return this.cached(['hasReadableChapters', mangaId, language], async () => {
+    const languageVariants = getMangaDexLanguageVariants(language);
+
+    return this.cached(['hasReadableChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, language], async () => {
       try {
         const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
           params: {
             limit: 10,
             offset: 0,
-            'translatedLanguage[]': [language],
+            'translatedLanguage[]': languageVariants,
             'order[chapter]': 'asc'
           }
         });

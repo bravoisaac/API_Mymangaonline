@@ -216,10 +216,12 @@ const COMICK_SPANISH_DISCOVERY_QUERIES = [
   'legend',
   'northern'
 ];
-const COMICK_LIBRARY_LOOKAHEAD_PAGES = 2;
+const COMICK_LIBRARY_DISCOVERY_PAGES = 1;
+const COMICK_LIBRARY_TOTAL_BUFFER_PAGES = 2;
+const COMICK_LIBRARY_MIN_TOTAL = 270;
 const COMICK_DISCOVERY_QUERY_LIMIT = 50;
 const COMICK_CHAPTER_SCAN_PAGES = 6;
-const COMICK_CHAPTER_CACHE_VERSION = 'scan-v3';
+const COMICK_CHAPTER_CACHE_VERSION = 'scan-v4';
 const COMICK_REQUEST_ATTEMPTS = 3;
 
 function wait(ms: number) {
@@ -323,7 +325,7 @@ export class ComickService implements MangaSource {
     const requestLimit = Math.min(Math.max((page + 1) * limit * 2, limit), 100);
     const sort = options.sort ?? 'popular';
 
-    return this.cached(['getMangaLibrary', 'discovery-v8', lang, limit, page, sort], async () => {
+    return this.cached(['getMangaLibrary', 'discovery-v10', lang, limit, page, sort], async () => {
       try {
         const data = await this.requestSearch(
           '',
@@ -334,20 +336,30 @@ export class ComickService implements MangaSource {
         const readableComics = await this.filterComicsWithReadableLanguage(comics, lang, {
           validateUnknownMetadata: false
         });
-        const discoveryTarget = offset + limit * COMICK_LIBRARY_LOOKAHEAD_PAGES;
+        const basePageComics = readableComics.slice(offset, offset + limit);
         const discoveryComics =
-          isSpanishLanguage(lang) && readableComics.length < discoveryTarget
-            ? await this.getSpanishDiscoveryComics(lang, sort, discoveryTarget, readableComics)
+          isSpanishLanguage(lang) && basePageComics.length < limit
+            ? await this.getSpanishDiscoveryPageComics(
+                lang,
+                sort,
+                page,
+                limit - basePageComics.length,
+                readableComics
+              )
             : [];
-        const mappedMangas = this.mergeComics(readableComics, discoveryComics).map((comic) =>
-          this.mapManga(comic, lang)
+        const pageComics = this.mergeComics(basePageComics, discoveryComics).slice(0, limit);
+        const mappedMangas = pageComics.map((comic) =>
+          this.mapLibraryManga(comic, lang)
         );
+        const hasMorePages = pageComics.length === limit;
 
         return {
           source: this.id,
           lang,
-          mangas: mappedMangas.slice(offset, offset + limit),
-          total: mappedMangas.length,
+          mangas: mappedMangas,
+          total: hasMorePages
+            ? Math.max(COMICK_LIBRARY_MIN_TOTAL, offset + limit * COMICK_LIBRARY_TOTAL_BUFFER_PAGES)
+            : offset + mappedMangas.length,
           limit,
           offset
         };
@@ -436,6 +448,21 @@ export class ComickService implements MangaSource {
       genres: this.getGenres(comic),
       language,
       raw: comic
+    };
+  }
+
+  private mapLibraryManga(comic: ComickComic, language: string): NormalizedManga {
+    return {
+      id: comic.slug ?? comic.hid ?? String(comic.id ?? ''),
+      source: this.id,
+      title: comic.title ?? comic.slug ?? '',
+      alternativeTitles: [],
+      description: '',
+      cover: this.buildImageUrl(comic.cover_url ?? comic.default_thumbnail ?? asArray(comic.md_covers)[0]?.b2key),
+      status: normalizeComickStatus(comic.status),
+      year: typeof comic.year === 'number' && comic.year > 0 ? comic.year : null,
+      genres: [],
+      language
     };
   }
 
@@ -565,16 +592,23 @@ export class ComickService implements MangaSource {
       .some((value) => value.toLowerCase() === normalizedId);
   }
 
-  private async getSpanishDiscoveryComics(
+  private async getSpanishDiscoveryPageComics(
     language: string,
     sort: MangaLibraryOptions['sort'],
-    targetTotal: number,
+    page: number,
+    targetCount: number,
     seedComics: ComickComic[] = []
   ) {
     const orderBy = sort === 'recentlyUpdated' ? 'last_chapter_at' : 'user_follow_count';
     const batches: ComickComic[][] = [];
+    const seedComicIds = new Set(seedComics.map((comic) => this.getComicId(comic)).filter(Boolean));
+    const startIndex = Math.max(page, 0) % COMICK_SPANISH_DISCOVERY_QUERIES.length;
+    const maxQueries = Math.min(COMICK_LIBRARY_DISCOVERY_PAGES + 3, COMICK_SPANISH_DISCOVERY_QUERIES.length);
 
-    for (const query of COMICK_SPANISH_DISCOVERY_QUERIES) {
+    for (let queryOffset = 0; queryOffset < maxQueries; queryOffset += 1) {
+      const query = COMICK_SPANISH_DISCOVERY_QUERIES[
+        (startIndex + queryOffset) % COMICK_SPANISH_DISCOVERY_QUERIES.length
+      ];
       try {
         const data = await this.requestSearch(query, COMICK_DISCOVERY_QUERY_LIMIT, orderBy);
         const comics = resolveSearchComics(data);
@@ -583,8 +617,9 @@ export class ComickService implements MangaSource {
         });
 
         batches.push(readableComics);
+        const candidates = this.mergeComics(...batches).filter((comic) => !seedComicIds.has(this.getComicId(comic)));
 
-        if (this.mergeComics(seedComics, ...batches).length >= targetTotal) {
+        if (candidates.length >= targetCount) {
           break;
         }
       } catch {
@@ -592,7 +627,9 @@ export class ComickService implements MangaSource {
       }
     }
 
-    return this.mergeComics(...batches);
+    return this.mergeComics(...batches)
+      .filter((comic) => !seedComicIds.has(this.getComicId(comic)))
+      .slice(0, targetCount);
   }
 
   private mergeComics(...comicLists: ComickComic[][]) {
@@ -600,7 +637,7 @@ export class ComickService implements MangaSource {
     const seenComicIds = new Set<string>();
 
     comicLists.flat().forEach((comic) => {
-      const comicId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
+      const comicId = this.getComicId(comic);
 
       if (!comicId || seenComicIds.has(comicId)) {
         return;
@@ -611,6 +648,10 @@ export class ComickService implements MangaSource {
     });
 
     return merged;
+  }
+
+  private getComicId(comic: ComickComic) {
+    return comic.slug ?? comic.hid ?? String(comic.id ?? '');
   }
 
   private async filterComicsWithReadableLanguage(
@@ -716,8 +757,17 @@ export class ComickService implements MangaSource {
     }
   ) {
     const requestedLanguage = params.lang ?? env.mangadexDefaultLanguage;
+    const localizedChapters = await this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
+      lang: params.lang,
+      page: params.page,
+      limit: params.limit
+    });
 
-    return this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
+    if (localizedChapters.length > 0 || !params.lang) {
+      return localizedChapters;
+    }
+
+    return this.getReadableChaptersFromPages(mangaId, undefined, {
       page: params.page,
       limit: params.limit
     });
@@ -725,7 +775,7 @@ export class ComickService implements MangaSource {
 
   private async getReadableChaptersFromPages(
     mangaId: string,
-    language: string,
+    language: string | undefined,
     params: {
       lang?: string;
       page: number;
@@ -749,7 +799,9 @@ export class ComickService implements MangaSource {
       });
 
       nextChapters
-        .filter((chapter) => this.isReadableChapterInLanguage(chapter, language))
+        .filter((chapter) =>
+          language ? this.isReadableChapterInLanguage(chapter, language) : this.isReadableChapter(chapter)
+        )
         .forEach((chapter) => {
           const chapterId = chapter.hid ?? String(chapter.id ?? `${chapter.chap ?? ''}:${chapter.lang ?? ''}`);
 
