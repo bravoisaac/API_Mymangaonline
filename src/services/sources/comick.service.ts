@@ -171,7 +171,7 @@ function asArray<TValue>(value: TValue[] | null | undefined): TValue[] {
 function getComickLanguageVariants(language: string) {
   const normalizedLanguage = language.toLowerCase();
 
-  if (normalizedLanguage === 'es') {
+  if (normalizedLanguage === 'es' || normalizedLanguage === 'es-419' || normalizedLanguage === 'es-la') {
     return ['es', 'es-419', 'es-la'];
   }
 
@@ -221,7 +221,7 @@ const COMICK_LIBRARY_TOTAL_BUFFER_PAGES = 2;
 const COMICK_LIBRARY_MIN_TOTAL = 270;
 const COMICK_DISCOVERY_QUERY_LIMIT = 50;
 const COMICK_CHAPTER_SCAN_PAGES = 6;
-const COMICK_CHAPTER_CACHE_VERSION = 'scan-v4';
+const COMICK_CHAPTER_CACHE_VERSION = 'scan-v6';
 const COMICK_REQUEST_ATTEMPTS = 3;
 
 function wait(ms: number) {
@@ -308,7 +308,9 @@ export class ComickService implements MangaSource {
       try {
         const data = await this.requestSearch(query, limit);
         const comics = resolveSearchComics(data);
-        const readableComics = await this.filterComicsWithReadableLanguage(comics, lang);
+        const readableComics = await this.filterComicsWithReadableLanguage(comics, lang, {
+          validateMetadataMatches: isSpanishLanguage(lang)
+        });
 
         return readableComics.map((comic) => this.mapManga(comic, lang));
       } catch (error) {
@@ -325,7 +327,7 @@ export class ComickService implements MangaSource {
     const requestLimit = Math.min(Math.max((page + 1) * limit * 2, limit), 100);
     const sort = options.sort ?? 'popular';
 
-    return this.cached(['getMangaLibrary', 'discovery-v10', lang, limit, page, sort], async () => {
+    return this.cached(['getMangaLibrary', 'discovery-v11', lang, limit, page, sort], async () => {
       try {
         const data = await this.requestSearch(
           '',
@@ -348,7 +350,13 @@ export class ComickService implements MangaSource {
               )
             : [];
         const pageComics = this.mergeComics(basePageComics, discoveryComics).slice(0, limit);
-        const mappedMangas = pageComics.map((comic) =>
+        const verifiedPageComics = isSpanishLanguage(lang)
+          ? await this.filterComicsWithReadableLanguage(pageComics, lang, {
+              validateMetadataMatches: true,
+              validateUnknownMetadata: true
+            })
+          : pageComics;
+        const mappedMangas = verifiedPageComics.map((comic) =>
           this.mapLibraryManga(comic, lang)
         );
         const hasMorePages = pageComics.length === limit;
@@ -357,7 +365,7 @@ export class ComickService implements MangaSource {
           source: this.id,
           lang,
           mangas: mappedMangas,
-          total: hasMorePages
+          total: hasMorePages && mappedMangas.length > 0
             ? Math.max(COMICK_LIBRARY_MIN_TOTAL, offset + limit * COMICK_LIBRARY_TOTAL_BUFFER_PAGES)
             : offset + mappedMangas.length,
           limit,
@@ -657,18 +665,23 @@ export class ComickService implements MangaSource {
   private async filterComicsWithReadableLanguage(
     comics: ComickComic[],
     language: string,
-    options: { validateUnknownMetadata?: boolean } = {}
+    options: { validateMetadataMatches?: boolean; validateUnknownMetadata?: boolean } = {}
   ) {
     const validateUnknownMetadata = options.validateUnknownMetadata ?? true;
+    const validateMetadataMatches = options.validateMetadataMatches ?? false;
 
     return filterAsyncWithConcurrency(comics, async (comic) => {
       const metadataMatch = this.hasLanguageMetadataMatch(comic, language);
 
-      if (metadataMatch !== null) {
+      if (metadataMatch !== null && !validateMetadataMatches) {
         return metadataMatch;
       }
 
-      if (!validateUnknownMetadata) {
+      if (metadataMatch === false) {
+        return false;
+      }
+
+      if (metadataMatch === null && !validateUnknownMetadata) {
         return false;
       }
 
@@ -756,18 +769,9 @@ export class ComickService implements MangaSource {
       limit: number;
     }
   ) {
-    const requestedLanguage = params.lang ?? env.mangadexDefaultLanguage;
-    const localizedChapters = await this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
-      lang: params.lang,
-      page: params.page,
-      limit: params.limit
-    });
+    const requestedLanguage = params.lang;
 
-    if (localizedChapters.length > 0 || !params.lang) {
-      return localizedChapters;
-    }
-
-    return this.getReadableChaptersFromPages(mangaId, undefined, {
+    return this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
       page: params.page,
       limit: params.limit
     });

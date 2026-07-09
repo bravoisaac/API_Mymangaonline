@@ -81,12 +81,12 @@ type AtHomeResponse = {
 };
 
 const MANGADEX_UPLOADS_URL = 'https://uploads.mangadex.org';
-const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v3';
+const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v5';
 
 function getMangaDexLanguageVariants(language: string) {
   const normalizedLanguage = language.toLowerCase();
 
-  if (normalizedLanguage === 'es' || normalizedLanguage === 'es-419') {
+  if (normalizedLanguage === 'es' || normalizedLanguage === 'es-419' || normalizedLanguage === 'es-la') {
     return ['es', 'es-la'];
   }
 
@@ -95,6 +95,10 @@ function getMangaDexLanguageVariants(language: string) {
   }
 
   return [normalizedLanguage];
+}
+
+function isSpanishLanguage(language: string) {
+  return getMangaDexLanguageVariants(language).some((variant) => variant === 'es' || variant === 'es-la');
 }
 
 function getRelationship(entity: MangaDexEntity<unknown>, type: string) {
@@ -210,18 +214,9 @@ export class MangaDexService implements MangaSource {
 
     return this.cached(['getChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, lang, limit, offset], async () => {
       try {
-        const localizedChapters = await this.requestChapters(mangaId, languageVariants, limit, offset);
-        const readableLocalizedChapters = localizedChapters
-          .map((entity) => this.mapChapter(entity, mangaId, lang))
-          .filter((chapter) => chapter.pages > 0);
+        const chapters = await this.requestChapters(mangaId, languageVariants, limit, offset);
 
-        if (readableLocalizedChapters.length > 0) {
-          return readableLocalizedChapters;
-        }
-
-        const fallbackChapters = await this.requestChapters(mangaId, undefined, limit, offset);
-
-        return fallbackChapters
+        return chapters
           .map((entity) => this.mapChapter(entity, mangaId, lang))
           .filter((chapter) => chapter.pages > 0);
       } catch (error) {
@@ -281,7 +276,10 @@ export class MangaDexService implements MangaSource {
         const response = await httpClient.get<MangaDexCollection<MangaAttributes>>(`${this.baseUrl}/manga`, {
           params
         });
-        const readableMangas = response.data.data.map((entity) => this.mapLibraryManga(entity, lang));
+        const mappedMangas = response.data.data.map((entity) => this.mapLibraryManga(entity, lang));
+        const readableMangas = isSpanishLanguage(lang)
+          ? await this.filterMangasWithReadableChapters(mappedMangas, lang)
+          : mappedMangas;
 
         return {
           source: this.id,
