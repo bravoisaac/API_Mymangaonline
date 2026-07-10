@@ -131,7 +131,6 @@ export class MangaAggregatorService {
     const offset = page * limit;
     const requestedSource = options.source ?? 'all';
     const isSingleSourceRequest = requestedSource !== 'all';
-    const sourceLimit = Math.min(Math.max((page + 1) * limit, limit * 4), 100);
     const hasMangaDexTagFilters = (options.tagIds?.length ?? 0) > 0;
     const librarySources = Array.from(this.sources.values()).filter((source) => {
       if (!source.enabled || typeof source.getMangaLibrary !== 'function') {
@@ -153,13 +152,11 @@ export class MangaAggregatorService {
     const settledResults = await Promise.all(
       librarySources.map(async (source) => {
         try {
-          const sourceRequestLimit =
-            isSingleSourceRequest || source.id !== 'comick' ? (isSingleSourceRequest ? limit : sourceLimit) : limit;
           const result = await source.getMangaLibrary?.({
             ...options,
             lang,
-            limit: sourceRequestLimit,
-            page: isSingleSourceRequest ? page : 0
+            limit,
+            page
           });
 
           return {
@@ -187,7 +184,7 @@ export class MangaAggregatorService {
 
     const mangas = isSingleSourceRequest
       ? results.flatMap((result) => result.mangas).slice(0, limit)
-      : this.mergeLibraryResults(results).slice(offset, offset + limit);
+      : this.mergeLibraryResults(results).slice(0, limit);
 
     return {
       source: 'all',
