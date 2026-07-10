@@ -403,20 +403,32 @@ export class ComickService implements MangaSource {
   async getChapters(mangaId: string, options: ChapterOptions = {}): Promise<NormalizedChapter[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
     const limit = options.limit ?? 100;
-    const page = Math.floor((options.offset ?? 0) / limit) + 1;
+    const offset = options.offset ?? 0;
+    const requestLimit = Math.min(offset + limit, 100);
 
-    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, page, limit], async () => {
+    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, offset, limit], async () => {
       try {
         const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
         const chapters = await this.getReadableChapters(canonicalMangaId, {
           lang,
-          page,
-          limit
+          page: 1,
+          limit: requestLimit
         });
 
         return chapters
           .map((chapter) => this.mapChapter(chapter, canonicalMangaId, chapter.lang ?? lang))
-          .filter((chapter) => chapter.id);
+          .filter((chapter) => chapter.id)
+          .sort((left, right) => {
+            const leftNumber = Number.parseFloat(left.chapter);
+            const rightNumber = Number.parseFloat(right.chapter);
+
+            if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+              return leftNumber - rightNumber;
+            }
+
+            return left.chapter.localeCompare(right.chapter, undefined, { numeric: true });
+          })
+          .slice(offset, offset + limit);
       } catch (error) {
         throw new ExternalApiError(getComickErrorMessage(error));
       }
@@ -483,16 +495,11 @@ export class ComickService implements MangaSource {
   ): Promise<NormalizedMangaDetails> {
     const manga = this.mapManga(comic, language);
     const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? requestedId);
-    const knownChapterCount = comic.chapters_count ?? comic.chapter_count;
-
     return {
       ...manga,
       authors: this.getAuthors(comic),
       artists: this.getAuthors(comic),
-      chaptersCount:
-        typeof knownChapterCount === 'number' && knownChapterCount >= 0
-          ? knownChapterCount
-          : await this.getLanguageChaptersCount(mangaId, language, embeddedChapters)
+      chaptersCount: await this.getLanguageChaptersCount(mangaId, language, embeddedChapters)
     };
   }
 
@@ -756,9 +763,7 @@ export class ComickService implements MangaSource {
   ) {
     if (embeddedChapters?.length) {
       const languageChapters = embeddedChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, language));
-      const readableChapters = embeddedChapters.filter((chapter) => this.isReadableChapter(chapter));
-
-      return (languageChapters.length > 0 ? languageChapters : readableChapters).length;
+      return languageChapters.length;
     }
 
     try {

@@ -224,13 +224,21 @@ export async function getMangaChapters(request: Request, response: Response, nex
     }
 
     const lang = getLanguage(request.query.lang);
-    const chapters = await mangaAggregatorService.getChapters(source, id, { lang });
+    const limit = getQueryNumber(request.query.limit, 10, 1, 100);
+    const offset = getQueryNumber(request.query.offset, 0, 0, 100000);
+    const [chapters, manga] = await Promise.all([
+      mangaAggregatorService.getChapters(source, id, { lang, limit, offset }),
+      mangaAggregatorService.getMangaDetails(source, id, { lang })
+    ]);
 
     response.json({
       source,
       mangaId: id,
       lang,
-      chapters
+      chapters,
+      total: manga.chaptersCount,
+      limit,
+      offset
     });
   } catch (error) {
     next(error);

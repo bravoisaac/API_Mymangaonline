@@ -365,13 +365,16 @@ export class MangaDexService implements MangaSource {
   }
 
   private async getChapterCount(mangaId: string, language: string) {
-    const readableChapters = await this.getChapters(mangaId, {
-      lang: language,
-      limit: 100,
-      offset: 0
+    const languageVariants = getMangaDexLanguageVariants(language);
+    const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
+      params: {
+        limit: 1,
+        offset: 0,
+        'translatedLanguage[]': languageVariants
+      }
     });
 
-    return readableChapters.length;
+    return response.data.total ?? response.data.data.length;
   }
 
   private async requestChapters(
