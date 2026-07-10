@@ -221,7 +221,8 @@ const COMICK_LIBRARY_TOTAL_BUFFER_PAGES = 2;
 const COMICK_LIBRARY_MIN_TOTAL = 270;
 const COMICK_DISCOVERY_QUERY_LIMIT = 50;
 const COMICK_CHAPTER_SCAN_PAGES = 6;
-const COMICK_CHAPTER_CACHE_VERSION = 'scan-v6';
+const COMICK_CHAPTER_CACHE_VERSION = 'scan-v7';
+const COMICK_SEARCH_CACHE_VERSION = 'search-v1';
 const COMICK_REQUEST_ATTEMPTS = 3;
 
 function wait(ms: number) {
@@ -685,6 +686,10 @@ export class ComickService implements MangaSource {
         return false;
       }
 
+      if (validateMetadataMatches && this.hasLatestChapterLanguageMatch(comic, language)) {
+        return true;
+      }
+
       const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? '');
 
       if (!mangaId) {
@@ -736,6 +741,14 @@ export class ComickService implements MangaSource {
     return Array.from(values);
   }
 
+  private hasLatestChapterLanguageMatch(comic: ComickComic, language: string) {
+    const languageVariants = getComickLanguageVariants(language);
+
+    return Object.entries(comic.chapter_latest_by_langs ?? {}).some(
+      ([chapterLanguage, latestChapter]) => latestChapter != null && languageVariants.includes(chapterLanguage.toLowerCase())
+    );
+  }
+
   private async getLanguageChaptersCount(
     mangaId: string,
     language: string,
@@ -770,11 +783,24 @@ export class ComickService implements MangaSource {
     }
   ) {
     const requestedLanguage = params.lang;
+    const languageVariants = requestedLanguage ? getComickLanguageVariants(requestedLanguage) : [undefined];
+    const chapterBatches = await Promise.all(
+      languageVariants.map((languageVariant) =>
+        this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
+          lang: languageVariant,
+          page: params.page,
+          limit: params.limit
+        })
+      )
+    );
+    const chaptersById = new Map<string, ComickChapter>();
 
-    return this.getReadableChaptersFromPages(mangaId, requestedLanguage, {
-      page: params.page,
-      limit: params.limit
+    chapterBatches.flat().forEach((chapter) => {
+      const chapterId = chapter.hid ?? String(chapter.id ?? `${chapter.chap ?? ''}:${chapter.lang ?? ''}`);
+      chaptersById.set(chapterId, chapter);
     });
+
+    return Array.from(chaptersById.values());
   }
 
   private async getReadableChaptersFromPages(
@@ -914,26 +940,28 @@ export class ComickService implements MangaSource {
   }
 
   private async requestSearch(query: string, limit: number, orderBy = 'user_follow_count'): Promise<ComickSearchResponse> {
-    const params = {
-      q: query,
-      limit,
-      order_by: orderBy,
-      order_direction: 'desc',
-      showAll: 'false',
-      exclude_mylist: 'false',
-      type: 'comic'
-    };
+    return this.cached(['requestSearch', COMICK_SEARCH_CACHE_VERSION, query.trim().toLowerCase(), limit, orderBy], async () => {
+      const params = {
+        q: query,
+        limit,
+        order_by: orderBy,
+        order_direction: 'desc',
+        showAll: 'false',
+        exclude_mylist: 'false',
+        type: 'comic'
+      };
 
-    try {
-      return await this.requestSearchFromBaseUrl(this.baseUrl, params);
-    } catch (error) {
-      if (error instanceof AxiosError && (error.response?.status === 403 || error.response?.status === 404)) {
-        const fallbackBaseUrl = this.baseUrl === 'https://comick.art' ? 'https://comick.live' : 'https://comick.art';
-        return this.requestSearchFromBaseUrl(fallbackBaseUrl, params);
+      try {
+        return await this.requestSearchFromBaseUrl(this.baseUrl, params);
+      } catch (error) {
+        if (error instanceof AxiosError && (error.response?.status === 403 || error.response?.status === 404)) {
+          const fallbackBaseUrl = this.baseUrl === 'https://comick.art' ? 'https://comick.live' : 'https://comick.art';
+          return this.requestSearchFromBaseUrl(fallbackBaseUrl, params);
+        }
+
+        throw error;
       }
-
-      throw error;
-    }
+    });
   }
 
   private async requestComicData(id: string): Promise<ComickComicDetailsResponse | ComickComic> {
