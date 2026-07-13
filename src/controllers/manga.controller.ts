@@ -43,6 +43,10 @@ function getLibrarySort(value: unknown): 'popular' | 'recentlyUpdated' {
   return getQueryString(value) === 'recentlyUpdated' ? 'recentlyUpdated' : 'popular';
 }
 
+function getChapterOrder(value: unknown): 'asc' | 'desc' {
+  return getQueryString(value) === 'desc' ? 'desc' : 'asc';
+}
+
 function getLibrarySource(value: unknown): 'all' | 'mangadex' | 'comick' {
   const source = getQueryString(value);
 
@@ -226,8 +230,9 @@ export async function getMangaChapters(request: Request, response: Response, nex
     const lang = getLanguage(request.query.lang);
     const limit = getQueryNumber(request.query.limit, 10, 1, 100);
     const offset = getQueryNumber(request.query.offset, 0, 0, 100000);
+    const order = getChapterOrder(request.query.order);
     const [chapters, manga] = await Promise.all([
-      mangaAggregatorService.getChapters(source, id, { lang, limit, offset }),
+      mangaAggregatorService.getChapters(source, id, { lang, limit, offset, order }),
       mangaAggregatorService.getMangaDetails(source, id, { lang })
     ]);
 

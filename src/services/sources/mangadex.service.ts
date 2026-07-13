@@ -81,7 +81,7 @@ type AtHomeResponse = {
 };
 
 const MANGADEX_UPLOADS_URL = 'https://uploads.mangadex.org';
-const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v5';
+const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v7';
 
 function getMangaDexLanguageVariants(language: string) {
   const normalizedLanguage = language.toLowerCase();
@@ -99,6 +99,27 @@ function getMangaDexLanguageVariants(language: string) {
 
 function isSpanishLanguage(language: string) {
   return getMangaDexLanguageVariants(language).some((variant) => variant === 'es' || variant === 'es-la');
+}
+
+function deduplicateMangaDexChapters(chapters: NormalizedChapter[]) {
+  const chaptersByNumber = new Map<string, NormalizedChapter>();
+
+  chapters.forEach((chapter) => {
+    const numericChapter = Number(chapter.chapter);
+    const chapterNumber = Number.isFinite(numericChapter)
+      ? String(numericChapter)
+      : chapter.chapter.trim().toLowerCase();
+    const key = chapterNumber || `id:${chapter.id}`;
+    const currentChapter = chaptersByNumber.get(key);
+    const chapterTimestamp = Date.parse(chapter.publishedAt ?? '');
+    const currentTimestamp = Date.parse(currentChapter?.publishedAt ?? '');
+
+    if (!currentChapter || (Number.isFinite(chapterTimestamp) ? chapterTimestamp : 0) > (Number.isFinite(currentTimestamp) ? currentTimestamp : 0)) {
+      chaptersByNumber.set(key, chapter);
+    }
+  });
+
+  return Array.from(chaptersByNumber.values());
 }
 
 function getRelationship(entity: MangaDexEntity<unknown>, type: string) {
@@ -211,14 +232,17 @@ export class MangaDexService implements MangaSource {
     const languageVariants = getMangaDexLanguageVariants(lang);
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
+    const order = options.order ?? 'asc';
 
-    return this.cached(['getChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, lang, limit, offset], async () => {
+    return this.cached(['getChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, lang, limit, offset, order], async () => {
       try {
-        const chapters = await this.requestChapters(mangaId, languageVariants, limit, offset);
+        const chapters = await this.requestChapters(mangaId, languageVariants, 100, 0, order);
 
-        return chapters
+        const normalizedChapters = deduplicateMangaDexChapters(chapters
           .map((entity) => this.mapChapter(entity, mangaId, lang))
-          .filter((chapter) => chapter.pages > 0);
+          .filter((chapter) => chapter.pages > 0));
+
+        return normalizedChapters.slice(offset, offset + limit);
       } catch (error) {
         throw new ExternalApiError(getMangaDexErrorMessage(error));
       }
@@ -365,28 +389,27 @@ export class MangaDexService implements MangaSource {
   }
 
   private async getChapterCount(mangaId: string, language: string) {
-    const languageVariants = getMangaDexLanguageVariants(language);
-    const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
-      params: {
-        limit: 1,
-        offset: 0,
-        'translatedLanguage[]': languageVariants
-      }
+    const chapters = await this.getChapters(mangaId, {
+      lang: language,
+      limit: 100,
+      offset: 0,
+      order: 'asc'
     });
 
-    return response.data.total ?? response.data.data.length;
+    return chapters.length;
   }
 
   private async requestChapters(
     mangaId: string,
     languages: string[] | undefined,
     limit: number,
-    offset: number
+    offset: number,
+    order: 'asc' | 'desc'
   ) {
     const params: Record<string, string | string[] | number> = {
       limit,
       offset,
-      'order[chapter]': 'asc'
+      'order[chapter]': order
     };
 
     if (languages?.length) {

@@ -435,9 +435,10 @@ export class ComickService implements MangaSource {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
+    const order = options.order ?? 'asc';
     const requestLimit = 20;
 
-    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, offset, limit], async () => {
+    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, offset, limit, order], async () => {
       try {
         const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
         const chapters = await this.getReadableChapters(canonicalMangaId, {
@@ -454,10 +455,11 @@ export class ComickService implements MangaSource {
             const rightNumber = Number.parseFloat(right.chapter);
 
             if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-              return leftNumber - rightNumber;
+              return order === 'desc' ? rightNumber - leftNumber : leftNumber - rightNumber;
             }
 
-            return left.chapter.localeCompare(right.chapter, undefined, { numeric: true });
+            const comparison = left.chapter.localeCompare(right.chapter, undefined, { numeric: true });
+            return order === 'desc' ? -comparison : comparison;
           })
           .slice(offset, offset + limit);
       } catch (error) {

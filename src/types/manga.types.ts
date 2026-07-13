@@ -13,6 +13,7 @@ export interface SearchOptions extends SourceOptions {
 export interface ChapterOptions extends SourceOptions {
   limit?: number;
   offset?: number;
+  order?: 'asc' | 'desc';
 }
 
 export interface ChapterPageOptions extends SourceOptions {
