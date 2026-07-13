@@ -1,4 +1,4 @@
-import { AxiosError } from 'axios';
+import { AxiosError, AxiosRequestConfig } from 'axios';
 
 import { env } from '../../config/env';
 import {
@@ -82,6 +82,27 @@ type AtHomeResponse = {
 
 const MANGADEX_UPLOADS_URL = 'https://uploads.mangadex.org';
 const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v7';
+const MANGADEX_REQUEST_ATTEMPTS = 2;
+
+async function requestMangaDex<TData>(url: string, config?: AxiosRequestConfig) {
+  for (let attempt = 0; attempt < MANGADEX_REQUEST_ATTEMPTS; attempt += 1) {
+    try {
+      return await httpClient.get<TData>(url, config);
+    } catch (error) {
+      const status = error instanceof AxiosError ? error.response?.status : undefined;
+      const isTemporaryError =
+        error instanceof AxiosError && (!status || status === 429 || status >= 500);
+
+      if (!isTemporaryError || attempt >= MANGADEX_REQUEST_ATTEMPTS - 1) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+
+  throw new Error('MangaDex request failed after retries');
+}
 
 function getMangaDexLanguageVariants(language: string) {
   const normalizedLanguage = language.toLowerCase();
@@ -206,19 +227,20 @@ export class MangaDexService implements MangaSource {
 
     return this.cached(['getMangaDetails', id, lang], async () => {
       try {
-        const response = await httpClient.get<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
+        const response = await requestMangaDex<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
           params: {
             'includes[]': ['cover_art', 'author', 'artist']
           }
         });
+        const entity = response.data.data;
 
         const chaptersCount = await this.getChapterCount(id, lang);
-        const manga = this.mapManga(response.data.data, lang);
+        const manga = this.mapManga(entity, lang);
 
         return {
           ...manga,
-          authors: getRelationshipNames(response.data.data, 'author'),
-          artists: getRelationshipNames(response.data.data, 'artist'),
+          authors: getRelationshipNames(entity, 'author'),
+          artists: getRelationshipNames(entity, 'artist'),
           chaptersCount
         };
       } catch (error) {
@@ -416,7 +438,7 @@ export class MangaDexService implements MangaSource {
       params['translatedLanguage[]'] = languages;
     }
 
-    const response = await httpClient.get<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
+    const response = await requestMangaDex<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
       params
     });
 

@@ -233,7 +233,7 @@ export async function getMangaChapters(request: Request, response: Response, nex
     const order = getChapterOrder(request.query.order);
     const [chapters, manga] = await Promise.all([
       mangaAggregatorService.getChapters(source, id, { lang, limit, offset, order }),
-      mangaAggregatorService.getMangaDetails(source, id, { lang })
+      mangaAggregatorService.getMangaDetails(source, id, { lang }).catch(() => null)
     ]);
 
     response.json({
@@ -241,7 +241,7 @@ export async function getMangaChapters(request: Request, response: Response, nex
       mangaId: id,
       lang,
       chapters,
-      total: manga.chaptersCount,
+      total: manga?.chaptersCount ?? offset + chapters.length,
       limit,
       offset
     });
