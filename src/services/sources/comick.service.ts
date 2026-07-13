@@ -221,7 +221,7 @@ const COMICK_LIBRARY_TOTAL_BUFFER_PAGES = 2;
 const COMICK_LIBRARY_MIN_TOTAL = 270;
 const COMICK_DISCOVERY_QUERY_LIMIT = 50;
 const COMICK_CHAPTER_SCAN_PAGES = 6;
-const COMICK_CHAPTER_CACHE_VERSION = 'scan-v7';
+const COMICK_CHAPTER_CACHE_VERSION = 'scan-v9';
 const COMICK_SEARCH_CACHE_VERSION = 'search-v1';
 const COMICK_REQUEST_ATTEMPTS = 3;
 
@@ -229,6 +229,37 @@ function wait(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function getComickChapterVersionTimestamp(chapter: ComickChapter) {
+  const timestamp = Date.parse(chapter.updated_at ?? chapter.publish_at ?? chapter.created_at ?? '');
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getComickChapterNumberKey(value: string | null | undefined) {
+  const normalizedValue = value?.trim().toLowerCase() ?? '';
+  const numericValue = Number(normalizedValue);
+
+  return normalizedValue && Number.isFinite(numericValue) ? String(numericValue) : normalizedValue;
+}
+
+function deduplicateComickChapters(chapters: ComickChapter[]) {
+  const chaptersByNumber = new Map<string, ComickChapter>();
+
+  chapters.forEach((chapter) => {
+    const chapterNumber = getComickChapterNumberKey(chapter.chap);
+    const chapterId = chapter.hid ?? String(chapter.id ?? '');
+    const chapterKey = chapterNumber
+      ? `${chapter.lang?.toLowerCase() ?? ''}:${chapter.vol?.trim().toLowerCase() ?? ''}:${chapterNumber}`
+      : `id:${chapterId}`;
+    const currentChapter = chaptersByNumber.get(chapterKey);
+
+    if (!currentChapter || getComickChapterVersionTimestamp(chapter) > getComickChapterVersionTimestamp(currentChapter)) {
+      chaptersByNumber.set(chapterKey, chapter);
+    }
+  });
+
+  return Array.from(chaptersByNumber.values());
 }
 
 function shouldRetryComickRequest(error: unknown) {
@@ -381,7 +412,7 @@ export class ComickService implements MangaSource {
   async getMangaDetails(id: string, options: SourceOptions = {}): Promise<NormalizedMangaDetails> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
 
-    return this.cached(['getMangaDetails', id, lang], async () => {
+    return this.cached(['getMangaDetails', COMICK_CHAPTER_CACHE_VERSION, id, lang], async () => {
       try {
         const data = await this.requestComicData(id);
         const comic = resolveComicDetails(data);
@@ -404,7 +435,7 @@ export class ComickService implements MangaSource {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
-    const requestLimit = Math.min(offset + limit, 100);
+    const requestLimit = 20;
 
     return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, offset, limit], async () => {
       try {
@@ -763,7 +794,7 @@ export class ComickService implements MangaSource {
   ) {
     if (embeddedChapters?.length) {
       const languageChapters = embeddedChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, language));
-      return languageChapters.length;
+      return deduplicateComickChapters(languageChapters).length;
     }
 
     try {
@@ -798,14 +829,7 @@ export class ComickService implements MangaSource {
         })
       )
     );
-    const chaptersById = new Map<string, ComickChapter>();
-
-    chapterBatches.flat().forEach((chapter) => {
-      const chapterId = chapter.hid ?? String(chapter.id ?? `${chapter.chap ?? ''}:${chapter.lang ?? ''}`);
-      chaptersById.set(chapterId, chapter);
-    });
-
-    return Array.from(chaptersById.values());
+    return deduplicateComickChapters(chapterBatches.flat());
   }
 
   private async getReadableChaptersFromPages(
