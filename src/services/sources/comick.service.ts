@@ -18,6 +18,7 @@ import { createCacheKey, TtlCache } from '../../utils/cache';
 import { ExternalApiError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 import { normalizeStatus } from '../../utils/normalize';
+import { translationService } from '../translation.service';
 import { MangaSource } from './mangaSource.interface';
 
 type ComickTitle = {
@@ -528,8 +529,11 @@ export class ComickService implements MangaSource {
   ): Promise<NormalizedMangaDetails> {
     const manga = this.mapManga(comic, language);
     const mangaId = comic.slug ?? comic.hid ?? String(comic.id ?? requestedId);
+    const description = await translationService.translate(manga.description, language);
+
     return {
       ...manga,
+      description,
       authors: this.getAuthors(comic),
       artists: this.getAuthors(comic),
       chaptersCount: await this.getLanguageChaptersCount(mangaId, language, embeddedChapters)

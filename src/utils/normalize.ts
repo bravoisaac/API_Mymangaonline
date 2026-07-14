@@ -5,7 +5,29 @@ export function getLocalizedText(text: Record<string, string> | undefined, langu
     return '';
   }
 
-  return text[language] ?? text.es ?? text.en ?? Object.values(text)[0] ?? '';
+  const normalizedLanguage = language.trim().toLowerCase();
+  const baseLanguage = normalizedLanguage.split('-')[0];
+  const localizedEntries = Object.entries(text).filter(([, value]) => Boolean(value));
+  const preferredLanguageCodes = Array.from(
+    new Set([
+      normalizedLanguage,
+      baseLanguage,
+      ...(baseLanguage === 'es' ? ['es-la', 'es-419'] : []),
+      ...localizedEntries
+        .map(([code]) => code.toLowerCase())
+        .filter((code) => code.startsWith(`${baseLanguage}-`)),
+    ]),
+  );
+
+  for (const languageCode of preferredLanguageCodes) {
+    const localizedText = localizedEntries.find(([code]) => code.toLowerCase() === languageCode)?.[1];
+
+    if (localizedText) {
+      return localizedText;
+    }
+  }
+
+  return text.en ?? localizedEntries[0]?.[1] ?? '';
 }
 
 export function getAlternativeTitles(titles: Record<string, string>[] | undefined) {
