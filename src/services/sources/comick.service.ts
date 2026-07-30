@@ -221,8 +221,9 @@ const COMICK_LIBRARY_DISCOVERY_PAGES = 1;
 const COMICK_LIBRARY_TOTAL_BUFFER_PAGES = 2;
 const COMICK_LIBRARY_MIN_TOTAL = 270;
 const COMICK_DISCOVERY_QUERY_LIMIT = 50;
-const COMICK_CHAPTER_SCAN_PAGES = 6;
-const COMICK_CHAPTER_CACHE_VERSION = 'scan-v9';
+const COMICK_CHAPTER_MAX_PAGES = 100;
+const COMICK_CHAPTER_REQUEST_LIMIT = 20;
+const COMICK_CHAPTER_CACHE_VERSION = 'all-v11';
 const COMICK_SEARCH_CACHE_VERSION = 'search-v1';
 const COMICK_REQUEST_ATTEMPTS = 3;
 
@@ -250,9 +251,7 @@ function deduplicateComickChapters(chapters: ComickChapter[]) {
   chapters.forEach((chapter) => {
     const chapterNumber = getComickChapterNumberKey(chapter.chap);
     const chapterId = chapter.hid ?? String(chapter.id ?? '');
-    const chapterKey = chapterNumber
-      ? `${chapter.lang?.toLowerCase() ?? ''}:${chapter.vol?.trim().toLowerCase() ?? ''}:${chapterNumber}`
-      : `id:${chapterId}`;
+    const chapterKey = chapterNumber ? `chapter:${chapterNumber}` : `id:${chapterId}`;
     const currentChapter = chaptersByNumber.get(chapterKey);
 
     if (!currentChapter || getComickChapterVersionTimestamp(chapter) > getComickChapterVersionTimestamp(currentChapter)) {
@@ -437,36 +436,12 @@ export class ComickService implements MangaSource {
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
     const order = options.order ?? 'asc';
-    const requestLimit = 20;
 
-    return this.cached(['getChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, lang, offset, limit, order], async () => {
-      try {
-        const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
-        const chapters = await this.getReadableChapters(canonicalMangaId, {
-          lang,
-          page: 1,
-          limit: requestLimit
-        });
+    const canonicalMangaId = await this.getCanonicalMangaId(mangaId);
+    const chapters = await this.getAllChapters(canonicalMangaId, lang);
+    const orderedChapters = order === 'desc' ? [...chapters].reverse() : chapters;
 
-        return chapters
-          .map((chapter) => this.mapChapter(chapter, canonicalMangaId, chapter.lang ?? lang))
-          .filter((chapter) => chapter.id)
-          .sort((left, right) => {
-            const leftNumber = Number.parseFloat(left.chapter);
-            const rightNumber = Number.parseFloat(right.chapter);
-
-            if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
-              return order === 'desc' ? rightNumber - leftNumber : leftNumber - rightNumber;
-            }
-
-            const comparison = left.chapter.localeCompare(right.chapter, undefined, { numeric: true });
-            return order === 'desc' ? -comparison : comparison;
-          })
-          .slice(offset, offset + limit);
-      } catch (error) {
-        throw new ExternalApiError(getComickErrorMessage(error));
-      }
-    });
+    return orderedChapters.slice(offset, offset + limit);
   }
 
   async getChapterPages(chapterId: string, _options?: ChapterPageOptions): Promise<NormalizedPage[]> {
@@ -798,22 +773,51 @@ export class ComickService implements MangaSource {
     language: string,
     embeddedChapters: ComickChapter[] | undefined
   ) {
-    if (embeddedChapters?.length) {
-      const languageChapters = embeddedChapters.filter((chapter) => this.isReadableChapterInLanguage(chapter, language));
-      return deduplicateComickChapters(languageChapters).length;
-    }
-
     try {
-      const chapters = await this.getReadableChapters(mangaId, {
-        lang: language,
-        page: 1,
-        limit: 100
-      });
-
+      const chapters = await this.getAllChapters(mangaId, language);
       return chapters.length;
     } catch {
+      if (embeddedChapters?.length) {
+        const languageChapters = embeddedChapters.filter((chapter) =>
+          this.isReadableChapterInLanguage(chapter, language)
+        );
+
+        return deduplicateComickChapters(languageChapters).length;
+      }
+
       return 0;
     }
+  }
+
+  private getAllChapters(mangaId: string, language: string) {
+    return this.cached<NormalizedChapter[]>(
+      ['getAllChapters', COMICK_CHAPTER_CACHE_VERSION, mangaId, language],
+      async () => {
+        try {
+          const chapters = await this.getReadableChapters(mangaId, {
+            lang: language,
+            page: 1,
+            limit: COMICK_CHAPTER_REQUEST_LIMIT
+          });
+
+          return chapters
+            .map((chapter) => this.mapChapter(chapter, mangaId, chapter.lang ?? language))
+            .filter((chapter) => chapter.id)
+            .sort((left, right) => {
+              const leftNumber = Number.parseFloat(left.chapter);
+              const rightNumber = Number.parseFloat(right.chapter);
+
+              if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+                return leftNumber - rightNumber;
+              }
+
+              return left.chapter.localeCompare(right.chapter, undefined, { numeric: true });
+            });
+        } catch (error) {
+          throw new ExternalApiError(getComickErrorMessage(error));
+        }
+      }
+    );
   }
 
   private async getReadableChapters(
@@ -852,7 +856,7 @@ export class ComickService implements MangaSource {
     const startPage = Math.max(params.page, 1);
     const limit = Math.max(params.limit, 1);
 
-    for (let page = startPage; page < startPage + COMICK_CHAPTER_SCAN_PAGES; page += 1) {
+    for (let page = startPage; page < startPage + COMICK_CHAPTER_MAX_PAGES; page += 1) {
       if (page > startPage) {
         await wait(env.scraperRequestDelayMs);
       }
@@ -862,6 +866,8 @@ export class ComickService implements MangaSource {
         page,
         limit
       });
+
+      let newChapterCount = 0;
 
       nextChapters
         .filter((chapter) =>
@@ -876,9 +882,10 @@ export class ComickService implements MangaSource {
 
           seenChapterIds.add(chapterId);
           chapters.push(chapter);
+          newChapterCount += 1;
         });
 
-      if (nextChapters.length < limit) {
+      if (nextChapters.length < limit || newChapterCount === 0) {
         break;
       }
     }
