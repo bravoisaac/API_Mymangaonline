@@ -83,6 +83,7 @@ type AtHomeResponse = {
 const MANGADEX_UPLOADS_URL = 'https://uploads.mangadex.org';
 const MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION = 'lang-variants-v7';
 const MANGADEX_REQUEST_ATTEMPTS = 2;
+const MANGADEX_CHAPTER_PAGE_LIMIT = 100;
 
 async function requestMangaDex<TData>(url: string, config?: AxiosRequestConfig) {
   for (let attempt = 0; attempt < MANGADEX_REQUEST_ATTEMPTS; attempt += 1) {
@@ -251,24 +252,13 @@ export class MangaDexService implements MangaSource {
 
   async getChapters(mangaId: string, options: ChapterOptions = {}): Promise<NormalizedChapter[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;
-    const languageVariants = getMangaDexLanguageVariants(lang);
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
     const order = options.order ?? 'asc';
+    const normalizedChapters = await this.getAllChapters(mangaId, lang);
+    const orderedChapters = order === 'desc' ? [...normalizedChapters].reverse() : normalizedChapters;
 
-    return this.cached(['getChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, lang, limit, offset, order], async () => {
-      try {
-        const chapters = await this.requestChapters(mangaId, languageVariants, 100, 0, order);
-
-        const normalizedChapters = deduplicateMangaDexChapters(chapters
-          .map((entity) => this.mapChapter(entity, mangaId, lang))
-          .filter((chapter) => chapter.pages > 0));
-
-        return normalizedChapters.slice(offset, offset + limit);
-      } catch (error) {
-        throw new ExternalApiError(getMangaDexErrorMessage(error));
-      }
-    });
+    return orderedChapters.slice(offset, offset + limit);
   }
 
   async getChapterPages(chapterId: string, options: ChapterPageOptions = {}): Promise<NormalizedPage[]> {
@@ -411,17 +401,66 @@ export class MangaDexService implements MangaSource {
   }
 
   private async getChapterCount(mangaId: string, language: string) {
-    const chapters = await this.getChapters(mangaId, {
-      lang: language,
-      limit: 100,
-      offset: 0,
-      order: 'asc'
-    });
+    const chapters = await this.getAllChapters(mangaId, language);
 
     return chapters.length;
   }
 
-  private async requestChapters(
+  private getAllChapters(mangaId: string, language: string) {
+    const languageVariants = getMangaDexLanguageVariants(language);
+
+    return this.cached<NormalizedChapter[]>(
+      ['getAllChapters', MANGADEX_LANGUAGE_VARIANT_CACHE_VERSION, mangaId, language],
+      async () => {
+        try {
+          const chapters = await this.requestAllChapters(mangaId, languageVariants);
+
+          return deduplicateMangaDexChapters(
+            chapters
+              .map((entity) => this.mapChapter(entity, mangaId, language))
+              .filter((chapter) => chapter.pages > 0)
+          );
+        } catch (error) {
+          throw new ExternalApiError(getMangaDexErrorMessage(error));
+        }
+      }
+    );
+  }
+
+  private async requestAllChapters(
+    mangaId: string,
+    languages: string[] | undefined
+  ) {
+    const chapters: MangaDexEntity<ChapterAttributes>[] = [];
+    let offset = 0;
+
+    while (true) {
+      const response = await this.requestChapterPage(
+        mangaId,
+        languages,
+        MANGADEX_CHAPTER_PAGE_LIMIT,
+        offset,
+        'asc'
+      );
+      const chapterPage = response.data.data;
+
+      chapters.push(...chapterPage);
+
+      if (
+        chapterPage.length === 0 ||
+        chapterPage.length < MANGADEX_CHAPTER_PAGE_LIMIT ||
+        (typeof response.data.total === 'number' && chapters.length >= response.data.total)
+      ) {
+        break;
+      }
+
+      offset += chapterPage.length;
+    }
+
+    return chapters;
+  }
+
+  private async requestChapterPage(
     mangaId: string,
     languages: string[] | undefined,
     limit: number,
@@ -438,11 +477,9 @@ export class MangaDexService implements MangaSource {
       params['translatedLanguage[]'] = languages;
     }
 
-    const response = await requestMangaDex<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
+    return requestMangaDex<MangaDexCollection<ChapterAttributes>>(`${this.baseUrl}/manga/${mangaId}/feed`, {
       params
     });
-
-    return response.data.data;
   }
 
   private async hasReadableChapters(mangaId: string, language: string) {
