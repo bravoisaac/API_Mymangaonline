@@ -10,6 +10,12 @@ import {
   MangaPage,
   MangaSearchResult
 } from '../../types/provider.types';
+import {
+  assertSafeOutboundUrl,
+  createAllowedHostSet,
+  createSafeHttpsAgent,
+  validateOutboundUrlSyntax
+} from '../../security/outboundUrl';
 import { ExternalApiError, SourceUnavailableError, ValidationError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 
@@ -23,6 +29,8 @@ export abstract class BaseScraperProvider implements ManagedMangaProvider {
   public readonly type = 'scraper' as const;
   public available = true;
   public unavailableReason?: string;
+  private readonly allowedHosts: ReadonlySet<string>;
+  private readonly safeHttpsAgent: ReturnType<typeof createSafeHttpsAgent>;
 
   protected constructor(
     public readonly id: string,
@@ -30,7 +38,10 @@ export abstract class BaseScraperProvider implements ManagedMangaProvider {
     protected readonly baseUrl: string,
     public readonly enabled: boolean,
     public readonly language = 'es'
-  ) {}
+  ) {
+    this.allowedHosts = createAllowedHostSet(baseUrl);
+    this.safeHttpsAgent = createSafeHttpsAgent({ allowedHosts: this.allowedHosts });
+  }
 
   abstract search(query: string): Promise<MangaSearchResult[]>;
   abstract getMangaDetails(mangaId: string): Promise<MangaDetails>;
@@ -45,10 +56,13 @@ export abstract class BaseScraperProvider implements ManagedMangaProvider {
     }
 
     try {
+      const safeUrl = await assertSafeOutboundUrl(normalizedUrl, { allowedHosts: this.allowedHosts });
       const response = await httpClient.request<string>({
-        method: 'GET',
         ...config,
-        url: normalizedUrl,
+        method: 'GET',
+        url: safeUrl.toString(),
+        maxRedirects: 0,
+        httpsAgent: this.safeHttpsAgent,
         responseType: 'text',
         transformResponse: [(data) => data],
         headers: {
@@ -88,10 +102,13 @@ export abstract class BaseScraperProvider implements ManagedMangaProvider {
     }
 
     try {
+      const safeUrl = await assertSafeOutboundUrl(normalizedUrl, { allowedHosts: this.allowedHosts });
       const response = await httpClient.request<T>({
-        method: 'GET',
         ...config,
-        url: normalizedUrl,
+        method: 'GET',
+        url: safeUrl.toString(),
+        maxRedirects: 0,
+        httpsAgent: this.safeHttpsAgent,
         responseType: 'json',
         headers: {
           Accept: 'application/json, text/javascript, */*;q=0.1',
@@ -161,19 +178,14 @@ export abstract class BaseScraperProvider implements ManagedMangaProvider {
       throw new ValidationError('Invalid URL to encode as scraper id');
     }
 
-    return Buffer.from(normalizedUrl, 'utf8').toString('base64url');
+    const safeUrl = validateOutboundUrlSyntax(normalizedUrl, this.allowedHosts);
+    return Buffer.from(safeUrl.toString(), 'utf8').toString('base64url');
   }
 
   protected decodeIdToUrl(id: string): string {
     try {
       const url = Buffer.from(id, 'base64url').toString('utf8');
-      const parsedUrl = new URL(url);
-
-      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        throw new Error('Unsupported URL protocol');
-      }
-
-      return parsedUrl.toString();
+      return validateOutboundUrlSyntax(url, this.allowedHosts).toString();
     } catch {
       throw new ValidationError('Invalid manga/chapter id');
     }

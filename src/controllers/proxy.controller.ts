@@ -1,38 +1,26 @@
-import { Readable } from 'node:stream';
-
 import { AxiosError } from 'axios';
 import { NextFunction, Request, Response } from 'express';
 
 import { env } from '../config/env';
-import { ExternalApiError, ValidationError } from '../utils/errors';
+import { assertSafeOutboundUrl, createSafeHttpsAgent, validateOutboundUrlSyntax } from '../security/outboundUrl';
+import { ExternalApiError } from '../utils/errors';
 import { httpClient } from '../utils/httpClient';
+import { getRequiredString } from '../utils/requestValidation';
 
 const ALLOWED_IMAGE_HOSTS = [
   'meo.comick.pictures',
   'meo2.comick.pictures',
-  'meo3.comick.pictures'
+  'meo3.comick.pictures',
+  'comicknew.pictures',
+  new URL(env.comickImageBaseUrl).hostname.toLowerCase()
 ];
-
-function isAllowedComickImageHost(hostname: string) {
-  return hostname === 'comicknew.pictures' || hostname.endsWith('.comicknew.pictures') || ALLOWED_IMAGE_HOSTS.includes(hostname);
-}
+const ALLOWED_IMAGE_HOST_SET = new Set(ALLOWED_IMAGE_HOSTS);
+const SAFE_IMAGE_AGENT = createSafeHttpsAgent({ allowedHosts: ALLOWED_IMAGE_HOST_SET });
+const ALLOWED_IMAGE_CONTENT_TYPES = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 
 function getImageUrl(value: unknown) {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new ValidationError('url is required');
-  }
-
-  const parsedUrl = new URL(value);
-
-  if (parsedUrl.protocol !== 'https:') {
-    throw new ValidationError('Only https image URLs are allowed');
-  }
-
-  if (!isAllowedComickImageHost(parsedUrl.hostname)) {
-    throw new ValidationError('Image host is not allowed');
-  }
-
-  return parsedUrl.toString();
+  const rawUrl = getRequiredString(value, 'url', { maxLength: 4096 });
+  return validateOutboundUrlSyntax(rawUrl, ALLOWED_IMAGE_HOST_SET).toString();
 }
 
 function getHeaderString(value: unknown, fallback = '') {
@@ -45,7 +33,7 @@ function getHeaderString(value: unknown, fallback = '') {
 
 function getImageProxyHeaders() {
   return {
-    Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8',
     Referer: `${env.comickBaseUrl}/`,
     Origin: env.comickBaseUrl,
     'User-Agent':
@@ -56,22 +44,30 @@ function getImageProxyHeaders() {
 export async function proxyImage(request: Request, response: Response, next: NextFunction) {
   try {
     const imageUrl = getImageUrl(request.query.url);
-    const upstream = await httpClient.get(imageUrl, {
-      responseType: 'stream',
-      headers: getImageProxyHeaders()
+    const safeImageUrl = await assertSafeOutboundUrl(imageUrl, { allowedHosts: ALLOWED_IMAGE_HOST_SET });
+    const upstream = await httpClient.get<ArrayBuffer>(safeImageUrl.toString(), {
+      responseType: 'arraybuffer',
+      headers: getImageProxyHeaders(),
+      httpsAgent: SAFE_IMAGE_AGENT,
+      maxRedirects: 0,
+      maxContentLength: env.imageProxyMaxBytes,
+      maxBodyLength: env.imageProxyMaxBytes
     });
-    const stream = upstream.data as Readable;
-    const contentLength = getHeaderString(upstream.headers['content-length']);
+    const imageBuffer = Buffer.from(upstream.data);
+    const contentType = getHeaderString(upstream.headers['content-type']).split(';')[0].trim().toLowerCase();
 
-    response.setHeader('Content-Type', getHeaderString(upstream.headers['content-type'], 'image/webp'));
-    if (contentLength) {
-      response.setHeader('Content-Length', contentLength);
+    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
+      throw new ExternalApiError('Comick image response had an unsupported content type');
     }
-    response.setHeader('Cache-Control', 'public, max-age=86400');
-    response.setHeader('Access-Control-Allow-Origin', '*');
 
-    stream.on('error', next);
-    stream.pipe(response);
+    if (imageBuffer.length > env.imageProxyMaxBytes) {
+      throw new ExternalApiError('Comick image response exceeded the configured size limit');
+    }
+
+    response.setHeader('Content-Type', contentType);
+    response.setHeader('Content-Length', String(imageBuffer.length));
+    response.setHeader('Cache-Control', 'public, max-age=86400');
+    response.send(imageBuffer);
   } catch (error) {
     if (error instanceof AxiosError) {
       const status = error.response?.status;

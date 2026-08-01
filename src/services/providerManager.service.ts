@@ -15,6 +15,7 @@ import { LeerMangaProvider } from './providers/leerManga.provider';
 import { MyMangaOnlineProvider } from './providers/myMangaOnline.provider';
 import { TuMangaOnlineProvider } from './providers/tuMangaOnline.provider';
 import { createCacheKey, TtlCache } from '../utils/cache';
+import { withTimeout } from '../utils/async';
 
 export class ProviderManager {
   private readonly providers: Map<string, ManagedMangaProvider>;
@@ -82,7 +83,11 @@ export class ProviderManager {
       }
 
       try {
-        const items = await this.searchProvider(provider.id, query);
+        const items = await withTimeout(
+          this.searchProvider(provider.id, query),
+          env.sourceSearchTimeoutMs,
+          `Provider "${provider.id}" search`
+        );
         results.push({ providerId: provider.id, items });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown provider error';

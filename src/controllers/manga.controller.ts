@@ -4,90 +4,48 @@ import { env } from '../config/env';
 import { mangaAggregatorService } from '../services/mangaAggregator.service';
 import { providerManager } from '../services/providerManager.service';
 import { ChapterQuality } from '../types/manga.types';
-import { ValidationError } from '../utils/errors';
-
-function getQueryString(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function getQueryStringArray(value: unknown) {
-  if (Array.isArray(value)) {
-    return value.map(getQueryString).filter(Boolean);
-  }
-
-  const singleValue = getQueryString(value);
-  return singleValue ? [singleValue] : [];
-}
-
-function getQueryNumber(value: unknown, fallback: number, min: number, max: number) {
-  const rawValue = getQueryString(value);
-  const parsedValue = rawValue ? Number(rawValue) : fallback;
-
-  if (!Number.isFinite(parsedValue)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(Math.floor(parsedValue), min), max);
-}
-
-function getLanguage(value: unknown) {
-  const language = getQueryString(value);
-  return language || env.mangadexDefaultLanguage;
-}
-
-function getTagMode(value: unknown): 'AND' | 'OR' {
-  return getQueryString(value) === 'OR' ? 'OR' : 'AND';
-}
-
-function getLibrarySort(value: unknown): 'popular' | 'recentlyUpdated' {
-  return getQueryString(value) === 'recentlyUpdated' ? 'recentlyUpdated' : 'popular';
-}
-
-function getChapterOrder(value: unknown): 'asc' | 'desc' {
-  return getQueryString(value) === 'desc' ? 'desc' : 'asc';
-}
-
-function getLibrarySource(value: unknown): 'all' | 'mangadex' | 'comick' {
-  const source = getQueryString(value);
-
-  return source === 'mangadex' || source === 'comick' ? source : 'all';
-}
+import {
+  getEnumValue,
+  getLanguage,
+  getOptionalString,
+  getQueryInteger,
+  getRequiredString,
+  getResourceId,
+  getSourceId,
+  getStringArray
+} from '../utils/requestValidation';
 
 function getLibraryQueryOptions(request: Request) {
   return {
     lang: getLanguage(request.query.lang),
-    page: getQueryNumber(request.query.page, 0, 0, 10000),
-    limit: getQueryNumber(request.query.limit, 15, 1, 100),
-    tagIds: getQueryStringArray(request.query.tagIds ?? request.query['tagIds[]']),
-    tagMode: getTagMode(request.query.tagMode),
-    sort: getLibrarySort(request.query.sort),
-    source: getLibrarySource(request.query.source)
+    page: getQueryInteger(request.query.page, 'page', 0, 0, 10000),
+    limit: getQueryInteger(request.query.limit, 'limit', 15, 1, 100),
+    tagIds: getStringArray(request.query.tagIds ?? request.query['tagIds[]'], 'tagIds', {
+      maxItems: 20,
+      maxItemLength: 64,
+      pattern: /^[a-z0-9-]+$/i
+    }),
+    tagMode: getEnumValue(request.query.tagMode, 'tagMode', ['AND', 'OR'] as const, 'AND'),
+    sort: getEnumValue(request.query.sort, 'sort', ['popular', 'recentlyUpdated'] as const, 'popular'),
+    source: getEnumValue(request.query.source, 'source', ['all', 'mangadex', 'comick'] as const, 'all')
   };
 }
 
 function getQuality(value: unknown): ChapterQuality {
-  const quality = getQueryString(value);
-
-  if (!quality) {
+  if (value === undefined) {
     return env.defaultChapterQuality;
   }
 
-  if (quality !== 'data' && quality !== 'data-saver') {
-    throw new ValidationError('quality must be "data" or "data-saver"');
-  }
-
-  return quality;
+  return getEnumValue(value, 'quality', ['data', 'data-saver'] as const, env.defaultChapterQuality);
 }
 
 export async function searchManga(request: Request, response: Response, next: NextFunction) {
   try {
-    const query = getQueryString(request.query.q);
-
-    if (!query) {
-      throw new ValidationError('q is required');
-    }
-
-    const source = getQueryString(request.query.source);
+    const query = getRequiredString(request.query.q, 'q', { maxLength: 120 });
+    const source = getOptionalString(request.query.source, 'source', {
+      maxLength: 40,
+      pattern: /^[a-z0-9][a-z0-9-]*$/i
+    });
 
     if (!source) {
       const payload = await providerManager.searchAll(query);
@@ -122,13 +80,8 @@ export async function searchManga(request: Request, response: Response, next: Ne
 
 export async function searchProviderManga(request: Request, response: Response, next: NextFunction) {
   try {
-    const query = getQueryString(request.query.q);
-
-    if (!query) {
-      throw new ValidationError('q is required');
-    }
-
-    const { providerId } = request.params;
+    const query = getRequiredString(request.query.q, 'q', { maxLength: 120 });
+    const providerId = getSourceId(request.params.providerId, 'providerId');
     const items = await providerManager.searchProvider(providerId, query);
 
     response.json({
@@ -143,11 +96,7 @@ export async function searchProviderManga(request: Request, response: Response, 
 
 export async function searchAllManga(request: Request, response: Response, next: NextFunction) {
   try {
-    const query = getQueryString(request.query.q);
-
-    if (!query) {
-      throw new ValidationError('q is required');
-    }
+    const query = getRequiredString(request.query.q, 'q', { maxLength: 120 });
 
     const lang = getLanguage(request.query.lang);
     const payload = await mangaAggregatorService.searchAll(query, { lang });
@@ -195,7 +144,8 @@ export async function getMangaTags(request: Request, response: Response, next: N
 
 export async function getMangaDetails(request: Request, response: Response, next: NextFunction) {
   try {
-    const { source, id } = request.params;
+    const source = getSourceId(request.params.source);
+    const id = getResourceId(request.params.id, 'id');
 
     if (providerManager.hasProvider(source)) {
       const manga = await providerManager.getMangaDetails(source, id);
@@ -214,7 +164,8 @@ export async function getMangaDetails(request: Request, response: Response, next
 
 export async function getMangaChapters(request: Request, response: Response, next: NextFunction) {
   try {
-    const { source, id } = request.params;
+    const source = getSourceId(request.params.source);
+    const id = getResourceId(request.params.id, 'id');
 
     if (providerManager.hasProvider(source)) {
       const chapters = await providerManager.getChapters(source, id);
@@ -228,9 +179,9 @@ export async function getMangaChapters(request: Request, response: Response, nex
     }
 
     const lang = getLanguage(request.query.lang);
-    const limit = getQueryNumber(request.query.limit, 10, 1, 100);
-    const offset = getQueryNumber(request.query.offset, 0, 0, 100000);
-    const order = getChapterOrder(request.query.order);
+    const limit = getQueryInteger(request.query.limit, 'limit', 10, 1, 100);
+    const offset = getQueryInteger(request.query.offset, 'offset', 0, 0, 100000);
+    const order = getEnumValue(request.query.order, 'order', ['asc', 'desc'] as const, 'asc');
     const [chapters, manga] = await Promise.all([
       mangaAggregatorService.getChapters(source, id, { lang, limit, offset, order }),
       mangaAggregatorService.getMangaDetails(source, id, { lang }).catch(() => null)
@@ -252,8 +203,8 @@ export async function getMangaChapters(request: Request, response: Response, nex
 
 export async function getChapterPages(request: Request, response: Response, next: NextFunction) {
   try {
-    const source = request.params.source ?? request.params.providerId;
-    const { chapterId } = request.params;
+    const source = getSourceId(request.params.source ?? request.params.providerId);
+    const chapterId = getResourceId(request.params.chapterId, 'chapterId');
 
     if (providerManager.hasProvider(source)) {
       const pages = await providerManager.getChapterPages(source, chapterId);

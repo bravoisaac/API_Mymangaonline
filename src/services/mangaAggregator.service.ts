@@ -14,6 +14,7 @@ import {
 } from '../types/manga.types';
 import { AggregatedSearchResult, SourceErrorResult, SourceMetadata } from '../types/source.types';
 import { AppError, SourceNotFoundError, SourceNotImplementedError } from '../utils/errors';
+import { withTimeout } from '../utils/async';
 import { ComickService } from './sources/comick.service';
 import { InmangaService } from './sources/inmanga.service';
 import { LeerMangaService } from './sources/leerManga.service';
@@ -63,7 +64,7 @@ export class MangaAggregatorService {
 
   async searchInSource(sourceId: string, query: string, options?: SearchOptions): Promise<NormalizedManga[]> {
     const source = this.getEnabledSource(sourceId);
-    return source.searchManga(query, options);
+    return withTimeout(source.searchManga(query, options), env.sourceSearchTimeoutMs, `Source "${source.id}" search`);
   }
 
   async searchAll(
@@ -76,22 +77,32 @@ export class MangaAggregatorService {
     errors: SourceErrorResult[];
   }> {
     const enabledSources = Array.from(this.sources.values()).filter((source) => source.enabled);
-    const results: AggregatedSearchResult<NormalizedManga>[] = [];
-    const errors: SourceErrorResult[] = [];
-
-    await Promise.all(
+    const settledResults = await Promise.all(
       enabledSources.map(async (source) => {
         try {
-          const items = await source.searchManga(query, options);
-          results.push({ source: source.id, items });
+          const items = await withTimeout(
+            source.searchManga(query, options),
+            env.sourceSearchTimeoutMs,
+            `Source "${source.id}" search`
+          );
+          return { result: { source: source.id, items }, error: null };
         } catch (error) {
-          errors.push({
-            source: source.id,
-            message: error instanceof Error ? error.message : 'Unknown source error'
-          });
+          return {
+            result: null,
+            error: {
+              source: source.id,
+              message: error instanceof Error ? error.message : 'Unknown source error'
+            }
+          };
         }
       })
     );
+    const results = settledResults
+      .map((item) => item.result)
+      .filter((item): item is AggregatedSearchResult<NormalizedManga> => item !== null);
+    const errors = settledResults
+      .map((item) => item.error)
+      .filter((item): item is SourceErrorResult => item !== null);
 
     return {
       query,
@@ -152,12 +163,16 @@ export class MangaAggregatorService {
     const settledResults = await Promise.all(
       librarySources.map(async (source) => {
         try {
-          const result = await source.getMangaLibrary?.({
-            ...options,
-            lang,
-            limit,
-            page
-          });
+          const result = await withTimeout(
+            source.getMangaLibrary?.({
+              ...options,
+              lang,
+              limit,
+              page
+            }) ?? Promise.resolve(undefined),
+            env.sourceSearchTimeoutMs,
+            `Source "${source.id}" library`
+          );
 
           return {
             source: source.id,

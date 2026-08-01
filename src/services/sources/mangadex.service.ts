@@ -214,9 +214,7 @@ export class MangaDexService implements MangaSource {
           }
         });
 
-        const mappedMangas = response.data.data.map((entity) => this.mapManga(entity, lang));
-
-        return this.filterMangasWithReadableChapters(mappedMangas, lang);
+        return response.data.data.map((entity) => this.mapManga(entity, lang));
       } catch (error) {
         throw new ExternalApiError(getMangaDexErrorMessage(error));
       }

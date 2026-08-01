@@ -19,3 +19,21 @@ export async function filterAsyncWithConcurrency<TItem>(
 
   return items.filter((_item, index) => matches[index]);
 }
+
+export async function withTimeout<TValue>(promise: Promise<TValue>, timeoutMs: number, operation: string) {
+  let timeoutId: NodeJS.Timeout | undefined;
+
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}

@@ -340,9 +340,7 @@ export class ComickService implements MangaSource {
       try {
         const data = await this.requestSearch(query, limit);
         const comics = resolveSearchComics(data);
-        const readableComics = await this.filterComicsWithReadableLanguage(comics, lang, {
-          validateMetadataMatches: isSpanishLanguage(lang)
-        });
+        const readableComics = comics.filter((comic) => this.hasLanguageMetadataMatch(comic, lang) !== false);
 
         return readableComics.map((comic) => this.mapManga(comic, lang));
       } catch (error) {
