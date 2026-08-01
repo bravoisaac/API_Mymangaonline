@@ -15,6 +15,7 @@ import {
 import { AggregatedSearchResult, SourceErrorResult, SourceMetadata } from '../types/source.types';
 import { AppError, SourceNotFoundError, SourceNotImplementedError } from '../utils/errors';
 import { withTimeout } from '../utils/async';
+import { assertMangaAllowed, filterAllowedMangas } from '../utils/mangaPolicy';
 import { ComickService } from './sources/comick.service';
 import { InmangaService } from './sources/inmanga.service';
 import { LeerMangaService } from './sources/leerManga.service';
@@ -64,7 +65,13 @@ export class MangaAggregatorService {
 
   async searchInSource(sourceId: string, query: string, options?: SearchOptions): Promise<NormalizedManga[]> {
     const source = this.getEnabledSource(sourceId);
-    return withTimeout(source.searchManga(query, options), env.sourceSearchTimeoutMs, `Source "${source.id}" search`);
+    const mangas = await withTimeout(
+      source.searchManga(query, options),
+      env.sourceSearchTimeoutMs,
+      `Source "${source.id}" search`
+    );
+
+    return filterAllowedMangas(mangas);
   }
 
   async searchAll(
@@ -85,7 +92,7 @@ export class MangaAggregatorService {
             env.sourceSearchTimeoutMs,
             `Source "${source.id}" search`
           );
-          return { result: { source: source.id, items }, error: null };
+          return { result: { source: source.id, items: filterAllowedMangas(items) }, error: null };
         } catch (error) {
           return {
             result: null,
@@ -118,11 +125,15 @@ export class MangaAggregatorService {
     options?: SourceOptions
   ): Promise<NormalizedMangaDetails> {
     const source = this.getEnabledSource(sourceId);
-    return source.getMangaDetails(mangaId, options);
+    const manga = await source.getMangaDetails(mangaId, options);
+    assertMangaAllowed(manga);
+    return manga;
   }
 
   async getChapters(sourceId: string, mangaId: string, options?: ChapterOptions): Promise<NormalizedChapter[]> {
     const source = this.getEnabledSource(sourceId);
+    const manga = await source.getMangaDetails(mangaId, { lang: options?.lang });
+    assertMangaAllowed(manga);
     return source.getChapters(mangaId, options);
   }
 
@@ -132,7 +143,12 @@ export class MangaAggregatorService {
   }
 
   async getMangaLibrary(options?: MangaLibraryOptions): Promise<NormalizedMangaLibraryPage> {
-    return this.getMangaDexSource().getMangaLibrary(options);
+    const page = await this.getMangaDexSource().getMangaLibrary(options);
+
+    return {
+      ...page,
+      mangas: filterAllowedMangas(page.mangas)
+    };
   }
 
   async getAggregatedMangaLibrary(options: MangaLibraryOptions = {}): Promise<AggregatedMangaLibraryPage> {
@@ -176,7 +192,7 @@ export class MangaAggregatorService {
 
           return {
             source: source.id,
-            mangas: result?.mangas ?? [],
+            mangas: filterAllowedMangas(result?.mangas ?? []),
             total: result?.total ?? 0
           };
         } catch (error) {

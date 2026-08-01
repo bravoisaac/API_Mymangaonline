@@ -16,6 +16,7 @@ import { MyMangaOnlineProvider } from './providers/myMangaOnline.provider';
 import { TuMangaOnlineProvider } from './providers/tuMangaOnline.provider';
 import { createCacheKey, TtlCache } from '../utils/cache';
 import { withTimeout } from '../utils/async';
+import { assertMangaAllowed, filterAllowedMangas } from '../utils/mangaPolicy';
 
 export class ProviderManager {
   private readonly providers: Map<string, ManagedMangaProvider>;
@@ -52,7 +53,9 @@ export class ProviderManager {
 
   async searchProvider(providerId: string, query: string): Promise<MangaSearchResult[]> {
     const provider = this.getEnabledProvider(providerId);
-    return this.cached(['searchProvider', providerId, query.trim().toLowerCase()], () => provider.search(query));
+    return this.cached(['searchProvider', providerId, query.trim().toLowerCase()], async () =>
+      filterAllowedMangas(await provider.search(query))
+    );
   }
 
   async searchAll(query: string): Promise<{
@@ -111,11 +114,16 @@ export class ProviderManager {
 
   async getMangaDetails(providerId: string, mangaId: string): Promise<MangaDetails> {
     const provider = this.getEnabledProvider(providerId);
-    return this.cached(['getMangaDetails', providerId, mangaId], () => provider.getMangaDetails(mangaId));
+    return this.cached(['getMangaDetails', providerId, mangaId], async () => {
+      const manga = await provider.getMangaDetails(mangaId);
+      assertMangaAllowed(manga);
+      return manga;
+    });
   }
 
   async getChapters(providerId: string, mangaId: string): Promise<MangaChapter[]> {
     const provider = this.getEnabledProvider(providerId);
+    await this.getMangaDetails(providerId, mangaId);
     return this.cached(['getChapters', providerId, mangaId], () => provider.getChapters(mangaId));
   }
 
