@@ -86,7 +86,11 @@ function decodeHtmlEntities(value: string) {
 }
 
 export class TranslationService {
-  private readonly cache = new TtlCache<string>(env.translationCacheTtlMs, env.queryCacheMaxEntries);
+  private readonly cache = new TtlCache<string>(
+    env.translationCacheTtlMs,
+    env.queryCacheMaxEntries,
+    env.queryCacheMaxPending
+  );
 
   async translate(text: string, targetLanguage: string, sourceLanguage = 'en') {
     const normalizedText = text.trim();

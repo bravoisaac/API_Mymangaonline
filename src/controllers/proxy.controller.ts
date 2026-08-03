@@ -3,7 +3,7 @@ import { NextFunction, Request, Response } from 'express';
 
 import { env } from '../config/env';
 import { assertSafeOutboundUrl, createSafeHttpsAgent, validateOutboundUrlSyntax } from '../security/outboundUrl';
-import { ExternalApiError } from '../utils/errors';
+import { AppError, ExternalApiError } from '../utils/errors';
 import { httpClient } from '../utils/httpClient';
 import { getRequiredString } from '../utils/requestValidation';
 
@@ -14,13 +14,12 @@ const ALLOWED_IMAGE_HOSTS = [
   'comicknew.pictures',
   'cdn1.comicknew.pictures',
   'cdn2.comicknew.pictures',
+  'uploads.mangadex.org',
   new URL(env.comickImageBaseUrl).hostname.toLowerCase()
 ];
 const ALLOWED_IMAGE_HOST_SET = new Set(ALLOWED_IMAGE_HOSTS);
 const SAFE_IMAGE_AGENT = createSafeHttpsAgent({ allowedHosts: ALLOWED_IMAGE_HOST_SET });
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
-const IMAGE_PROXY_CONCURRENCY = 1;
-const IMAGE_PROXY_REQUEST_DELAY_MS = 200;
 const IMAGE_PROXY_RETRY_ATTEMPTS = 4;
 const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 const IMAGE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
@@ -54,11 +53,14 @@ function getHeaderString(value: unknown, fallback = '') {
   return fallback;
 }
 
-function getImageProxyHeaders() {
+function getImageProxyHeaders(imageUrl: URL) {
+  const isMangaDexImage = imageUrl.hostname.toLowerCase() === 'uploads.mangadex.org';
+  const sourceOrigin = isMangaDexImage ? 'https://mangadex.org' : env.comickBaseUrl;
+
   return {
     Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8',
-    Referer: `${env.comickBaseUrl}/`,
-    Origin: env.comickBaseUrl,
+    Referer: `${sourceOrigin.replace(/\/$/, '')}/`,
+    Origin: sourceOrigin.replace(/\/$/, ''),
     'User-Agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
   };
@@ -69,9 +71,13 @@ function wait(milliseconds: number) {
 }
 
 async function acquireImageRequestSlot() {
-  if (activeImageRequests < IMAGE_PROXY_CONCURRENCY) {
+  if (activeImageRequests < env.imageProxyConcurrency) {
     activeImageRequests += 1;
     return;
+  }
+
+  if (imageRequestWaiters.length >= env.imageProxyMaxQueue) {
+    throw new AppError('Image proxy is busy. Please try again later.', 503);
   }
 
   await new Promise<void>((resolve) => {
@@ -93,7 +99,9 @@ async function withImageRequestSlot<TValue>(loader: () => Promise<TValue>) {
   try {
     return await loader();
   } finally {
-    await wait(IMAGE_PROXY_REQUEST_DELAY_MS);
+    if (env.imageProxyRequestDelayMs > 0) {
+      await wait(env.imageProxyRequestDelayMs);
+    }
     releaseImageRequestSlot();
   }
 }
@@ -176,7 +184,7 @@ async function downloadImage(imageUrl: URL): Promise<ProxiedImage> {
       const upstream = await withImageRequestSlot(() =>
         httpClient.get<ArrayBuffer>(imageUrl.toString(), {
           responseType: 'arraybuffer',
-          headers: getImageProxyHeaders(),
+          headers: getImageProxyHeaders(imageUrl),
           httpsAgent: SAFE_IMAGE_AGENT,
           maxRedirects: 0,
           maxContentLength: env.imageProxyMaxBytes,
@@ -187,11 +195,11 @@ async function downloadImage(imageUrl: URL): Promise<ProxiedImage> {
       const contentType = getHeaderString(upstream.headers['content-type']).split(';')[0].trim().toLowerCase();
 
       if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
-        throw new ExternalApiError('Comick image response had an unsupported content type');
+        throw new ExternalApiError('Image provider returned an unsupported content type');
       }
 
       if (imageBuffer.length > env.imageProxyMaxBytes) {
-        throw new ExternalApiError('Comick image response exceeded the configured size limit');
+        throw new ExternalApiError('Image provider response exceeded the configured size limit');
       }
 
       return { buffer: imageBuffer, contentType };
@@ -204,7 +212,7 @@ async function downloadImage(imageUrl: URL): Promise<ProxiedImage> {
     }
   }
 
-  throw new ExternalApiError('Comick image request failed');
+  throw new ExternalApiError('Image provider request failed');
 }
 
 function loadImage(imageUrl: URL) {
@@ -247,8 +255,12 @@ export async function proxyImage(request: Request, response: Response, next: Nex
   } catch (error) {
     if (error instanceof AxiosError) {
       const status = error.response?.status;
-      next(new ExternalApiError(status ? `Comick image request failed with status ${status}` : 'Comick image request failed'));
+      next(new ExternalApiError(status ? `Image provider request failed with status ${status}` : 'Image provider request failed'));
       return;
+    }
+
+    if (error instanceof AppError && error.statusCode === 503) {
+      response.setHeader('Retry-After', '1');
     }
 
     next(error);

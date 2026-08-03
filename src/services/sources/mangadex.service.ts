@@ -191,7 +191,11 @@ export class MangaDexService implements MangaSource {
   public readonly supportsSpanish = true;
   public readonly supportsPages = true;
   private readonly baseUrl = env.mangadexBaseUrl;
-  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
+  private readonly cache = new TtlCache<unknown>(
+    env.queryCacheTtlMs,
+    env.queryCacheMaxEntries,
+    env.queryCacheMaxPending
+  );
 
   async searchManga(query: string, options: SearchOptions = {}): Promise<NormalizedManga[]> {
     const lang = options.lang ?? env.mangadexDefaultLanguage;

@@ -14,6 +14,12 @@ test('accepts current Comick cover CDN hosts', () => {
   });
 });
 
+test('accepts the exact MangaDex uploads host used by covers', () => {
+  const coverUrl = 'https://uploads.mangadex.org/covers/manga-id/cover.jpg.512.jpg';
+
+  assert.equal(getImageUrl(coverUrl), coverUrl);
+});
+
 test('rejects arbitrary Comick-like subdomains', () => {
   assert.throws(
     () => getImageUrl('https://attacker.comicknew.pictures/example.webp'),

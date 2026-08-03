@@ -20,7 +20,11 @@ import { assertMangaAllowed, filterAllowedMangas } from '../utils/mangaPolicy';
 
 export class ProviderManager {
   private readonly providers: Map<string, ManagedMangaProvider>;
-  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
+  private readonly cache = new TtlCache<unknown>(
+    env.queryCacheTtlMs,
+    env.queryCacheMaxEntries,
+    env.queryCacheMaxPending
+  );
 
   constructor() {
     const providerList: ManagedMangaProvider[] = [

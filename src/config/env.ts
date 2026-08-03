@@ -81,11 +81,58 @@ function parseChapterQuality(value: string | undefined): ChapterQuality {
   return value === 'data-saver' ? 'data-saver' : 'data';
 }
 
+function parseTrustProxy(value: string | undefined): boolean | number | string {
+  const normalized = value?.trim();
+
+  if (!normalized || normalized.toLowerCase() === 'false') {
+    return false;
+  }
+
+  if (normalized.toLowerCase() === 'true') {
+    return true;
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return parseIntegerInRange('TRUST_PROXY', normalized, 0, 0, 16);
+  }
+
+  return normalized;
+}
+
 export const env = {
   port: parseIntegerInRange('PORT', process.env.PORT, 3000, 1, 65535),
   nodeEnv: process.env.NODE_ENV ?? 'development',
   corsOrigins: parseCorsOrigins(process.env.CORS_ORIGIN, process.env.NODE_ENV ?? 'development'),
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
   includeErrorStacks: parseBoolean(process.env.INCLUDE_ERROR_STACKS, false),
+  rateLimitWindowMs: parseIntegerInRange(
+    'RATE_LIMIT_WINDOW_MS',
+    process.env.RATE_LIMIT_WINDOW_MS,
+    60000,
+    1000,
+    3600000
+  ),
+  rateLimitMaxRequests: parseIntegerInRange(
+    'RATE_LIMIT_MAX_REQUESTS',
+    process.env.RATE_LIMIT_MAX_REQUESTS,
+    120,
+    10,
+    10000
+  ),
+  rateLimitMaxKeys: parseIntegerInRange(
+    'RATE_LIMIT_MAX_KEYS',
+    process.env.RATE_LIMIT_MAX_KEYS,
+    10000,
+    100,
+    1000000
+  ),
+  imageProxyRateLimitMaxRequests: parseIntegerInRange(
+    'IMAGE_PROXY_RATE_LIMIT_MAX_REQUESTS',
+    process.env.IMAGE_PROXY_RATE_LIMIT_MAX_REQUESTS,
+    90,
+    10,
+    10000
+  ),
   requestTimeoutMs: parseIntegerInRange('REQUEST_TIMEOUT_MS', process.env.REQUEST_TIMEOUT_MS, 15000, 1000, 120000),
   sourceSearchTimeoutMs: parseIntegerInRange(
     'SOURCE_SEARCH_TIMEOUT_MS',
@@ -101,9 +148,38 @@ export const env = {
     1048576,
     52428800
   ),
+  imageProxyConcurrency: parseIntegerInRange(
+    'IMAGE_PROXY_CONCURRENCY',
+    process.env.IMAGE_PROXY_CONCURRENCY,
+    3,
+    1,
+    20
+  ),
+  imageProxyMaxQueue: parseIntegerInRange(
+    'IMAGE_PROXY_MAX_QUEUE',
+    process.env.IMAGE_PROXY_MAX_QUEUE,
+    60,
+    1,
+    1000
+  ),
+  imageProxyRequestDelayMs: parseIntegerInRange(
+    'IMAGE_PROXY_REQUEST_DELAY_MS',
+    process.env.IMAGE_PROXY_REQUEST_DELAY_MS,
+    75,
+    0,
+    5000
+  ),
   scraperRequestDelayMs: parseNumber(process.env.SCRAPER_REQUEST_DELAY_MS, 350),
   queryCacheTtlMs: parseNumber(process.env.QUERY_CACHE_TTL_MS, 120000),
   queryCacheMaxEntries: parseNumber(process.env.QUERY_CACHE_MAX_ENTRIES, 500),
+  queryCacheMaxPending: parseIntegerInRange(
+    'QUERY_CACHE_MAX_PENDING',
+    process.env.QUERY_CACHE_MAX_PENDING,
+    100,
+    1,
+    10000
+  ),
+  comickMaxQueue: parseIntegerInRange('COMICK_MAX_QUEUE', process.env.COMICK_MAX_QUEUE, 40, 1, 1000),
   translationEnabled: parseBoolean(process.env.TRANSLATION_ENABLED, true),
   translationApiUrl: process.env.TRANSLATION_API_URL ?? 'https://api.mymemory.translated.net/get',
   translationCacheTtlMs: parseNumber(process.env.TRANSLATION_CACHE_TTL_MS, 86400000),

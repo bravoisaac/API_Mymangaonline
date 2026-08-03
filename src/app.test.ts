@@ -61,3 +61,27 @@ test('rejects unsupported language values with a 400 response', async () => {
   assert.equal(response.status, 400);
   assert.match(payload.error.message, /lang must be one of/);
 });
+
+test('reports oversized JSON as 413 instead of an internal error', async () => {
+  const response = await fetch(`${baseUrl}/api/health`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: 'x'.repeat(40 * 1024) })
+  });
+  const payload = await response.json() as { error: { message: string } };
+
+  assert.equal(response.status, 413);
+  assert.match(payload.error.message, /too large/i);
+});
+
+test('reports malformed JSON as 400', async () => {
+  const response = await fetch(`${baseUrl}/api/health`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{"broken":'
+  });
+  const payload = await response.json() as { error: { message: string } };
+
+  assert.equal(response.status, 400);
+  assert.match(payload.error.message, /invalid JSON/i);
+});

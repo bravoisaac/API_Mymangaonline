@@ -1,3 +1,5 @@
+import { AppError } from './errors';
+
 type CacheEntry<TValue> = {
   expiresAt: number;
   value: TValue;
@@ -28,7 +30,8 @@ export class TtlCache<TValue> {
 
   constructor(
     private readonly ttlMs: number,
-    private readonly maxEntries: number
+    private readonly maxEntries: number,
+    private readonly maxPending = 100
   ) {}
 
   async getOrSet(key: string, loader: () => Promise<TValue>): Promise<TValue> {
@@ -46,6 +49,10 @@ export class TtlCache<TValue> {
 
     if (pendingValue) {
       return pendingValue;
+    }
+
+    if (this.pending.size >= this.maxPending) {
+      throw new AppError('Upstream request queue is full. Please try again later.', 503);
     }
 
     const promise = loader()

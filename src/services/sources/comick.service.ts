@@ -15,7 +15,7 @@ import {
 } from '../../types/manga.types';
 import { filterAsyncWithConcurrency } from '../../utils/async';
 import { createCacheKey, TtlCache } from '../../utils/cache';
-import { ExternalApiError } from '../../utils/errors';
+import { ExternalApiError, SourceUnavailableError } from '../../utils/errors';
 import { httpClient } from '../../utils/httpClient';
 import { normalizeStatus } from '../../utils/normalize';
 import { translationService } from '../translation.service';
@@ -325,8 +325,13 @@ export class ComickService implements MangaSource {
   public readonly supportsPages = true;
   private readonly baseUrl = env.comickBaseUrl;
   private readonly imageBaseUrl = env.comickImageBaseUrl;
-  private readonly cache = new TtlCache<unknown>(env.queryCacheTtlMs, env.queryCacheMaxEntries);
+  private readonly cache = new TtlCache<unknown>(
+    env.queryCacheTtlMs,
+    env.queryCacheMaxEntries,
+    env.queryCacheMaxPending
+  );
   private requestQueue: Promise<void> = Promise.resolve();
+  private queuedRequests = 0;
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -1018,6 +1023,11 @@ export class ComickService implements MangaSource {
   }
 
   private async runComickRequest<TValue>(loader: () => Promise<TValue>): Promise<TValue> {
+    if (this.queuedRequests >= env.comickMaxQueue) {
+      throw new SourceUnavailableError(this.id, 'request queue is full');
+    }
+
+    this.queuedRequests += 1;
     const run = this.requestQueue.then(async () => {
       try {
         return await loader();
@@ -1031,7 +1041,9 @@ export class ComickService implements MangaSource {
       () => undefined
     );
 
-    return run;
+    return run.finally(() => {
+      this.queuedRequests = Math.max(0, this.queuedRequests - 1);
+    });
   }
 
   private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {
