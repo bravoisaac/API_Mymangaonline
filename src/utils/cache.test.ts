@@ -29,3 +29,16 @@ test('deduplicates equal pending keys and rejects new work when the pending budg
   assert.equal(await duplicate, 'first value');
   assert.equal(loaderCalls, 1);
 });
+
+test('keeps recently used entries when the cache reaches its size limit', () => {
+  const cache = new TtlCache<string>(60_000, 2);
+
+  cache.set('first', 'first value');
+  cache.set('second', 'second value');
+  assert.equal(cache.get('first'), 'first value');
+  cache.set('third', 'third value');
+
+  assert.equal(cache.get('first'), 'first value');
+  assert.equal(cache.get('second'), undefined);
+  assert.equal(cache.get('third'), 'third value');
+});

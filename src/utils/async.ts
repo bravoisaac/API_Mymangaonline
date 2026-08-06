@@ -20,6 +20,28 @@ export async function filterAsyncWithConcurrency<TItem>(
   return items.filter((_item, index) => matches[index]);
 }
 
+export function mapWithStaggeredStart<TItem, TResult>(
+  items: TItem[],
+  mapper: (item: TItem, index: number) => Promise<TResult>,
+  staggerMs = 0
+): Promise<TResult[]> {
+  const normalizedStaggerMs = Math.max(0, staggerMs);
+
+  return Promise.all(
+    items.map(async (item, index) => {
+      const startDelayMs = index * normalizedStaggerMs;
+
+      if (startDelayMs > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, startDelayMs);
+        });
+      }
+
+      return mapper(item, index);
+    })
+  );
+}
+
 export async function withTimeout<TValue>(promise: Promise<TValue>, timeoutMs: number, operation: string) {
   let timeoutId: NodeJS.Timeout | undefined;
 

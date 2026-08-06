@@ -80,6 +80,8 @@ export class TtlCache<TValue> {
       return undefined;
     }
 
+    this.entries.delete(key);
+    this.entries.set(key, entry);
     return entry.value;
   }
 

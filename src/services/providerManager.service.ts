@@ -15,7 +15,7 @@ import { LeerMangaProvider } from './providers/leerManga.provider';
 import { MyMangaOnlineProvider } from './providers/myMangaOnline.provider';
 import { TuMangaOnlineProvider } from './providers/tuMangaOnline.provider';
 import { createCacheKey, TtlCache } from '../utils/cache';
-import { withTimeout } from '../utils/async';
+import { mapWithStaggeredStart, withTimeout } from '../utils/async';
 import { assertMangaAllowed, filterAllowedMangas } from '../utils/mangaPolicy';
 
 export class ProviderManager {
@@ -81,27 +81,36 @@ export class ProviderManager {
     }
 
     const providers = Array.from(this.providers.values()).filter((provider) => provider.enabled && provider.available);
-    const results: ProviderSearchResult[] = [];
-    const errors: ProviderErrorResult[] = [];
-
-    for (const [index, provider] of providers.entries()) {
-      if (index > 0) {
-        await this.delay(env.scraperRequestDelayMs);
-      }
-
-      try {
-        const items = await withTimeout(
-          this.searchProvider(provider.id, query),
-          env.sourceSearchTimeoutMs,
-          `Provider "${provider.id}" search`
-        );
-        results.push({ providerId: provider.id, items });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown provider error';
-        console.warn(`[ProviderManager] provider search failed: ${provider.id}`, { providerId: provider.id, message });
-        errors.push({ providerId: provider.id, message });
-      }
-    }
+    const settledResults = await mapWithStaggeredStart(
+      providers,
+      async (provider) => {
+        try {
+          const items = await withTimeout(
+            this.searchProvider(provider.id, query),
+            env.sourceSearchTimeoutMs,
+            `Provider "${provider.id}" search`
+          );
+          return {
+            result: { providerId: provider.id, items } satisfies ProviderSearchResult,
+            error: null
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown provider error';
+          console.warn(`[ProviderManager] provider search failed: ${provider.id}`, { providerId: provider.id, message });
+          return {
+            result: null,
+            error: { providerId: provider.id, message } satisfies ProviderErrorResult
+          };
+        }
+      },
+      env.scraperRequestDelayMs
+    );
+    const results = settledResults
+      .map((item) => item.result)
+      .filter((item): item is ProviderSearchResult => item !== null);
+    const errors = settledResults
+      .map((item) => item.error)
+      .filter((item): item is ProviderErrorResult => item !== null);
 
     const payload = {
       query,
@@ -154,16 +163,6 @@ export class ProviderManager {
     }
 
     return provider;
-  }
-
-  private async delay(ms: number): Promise<void> {
-    if (ms <= 0) {
-      return;
-    }
-
-    await new Promise((resolve) => {
-      setTimeout(resolve, ms);
-    });
   }
 
   private cached<TValue>(parts: unknown[], loader: () => Promise<TValue>): Promise<TValue> {
