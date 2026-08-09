@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: mymangaonline-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 20
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        sync: false
+      - key: TRUST_PROXY
+        value: "1"
+      - key: INCLUDE_ERROR_STACKS
+        value: "false"
+      - key: MANGADEX_ENABLED
+        value: "true"
+      - key: COMICK_ENABLED
+        value: "true"
+      - key: INMANGA_ENABLED
+        value: "false"
+      - key: LEERMANGA_ENABLED
+        value: "false"
+      - key: TUMANGAONLINE_ENABLED
+        value: "false"
+      - key: MANGA_SCRAPER_ENABLED
+        value: "false"
+      - key: MANGPI_ENABLED
+        value: "false"
+      - key: MYMANGAONLINE_PROVIDER_ENABLED
+        value: "false"
+      - key: INMANGA_PROVIDER_ENABLED
+        value: "false"
+      - key: LEERMANGA_PROVIDER_ENABLED
+        value: "false"
+      - key: TUMANGAONLINE_PROVIDER_ENABLED
+        value: "false"
+      - key: TRANSLATION_ENABLED
+        value: "false"

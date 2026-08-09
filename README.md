@@ -191,3 +191,7 @@ Los tipos se encuentran en `src/types/manga.types.ts`.
 - La API es para uso personal, educativo y de portafolio.
 - No guarda imágenes ni capítulos en disco.
 - El proxy de Comick evita bloqueos por hotlinking y envía cabeceras de `Referer`, `Origin` y `User-Agent`.
+
+## Despliegue gratuito
+
+`render.yaml` crea un Web Service Docker en Render Free, configura el healthcheck y solicita el origen CORS durante el primer despliegue. La secuencia completa para publicar esta API junto al frontend en Cloudflare Pages está en la [guía de despliegue gratuito](https://github.com/bravoisaac/Mymangaonline/blob/main/DEPLOY_FREE.md).
