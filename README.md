@@ -58,7 +58,7 @@ flowchart LR
 
 ### Requisitos
 
-- Node.js 20 o superior.
+- Node.js 22 (el código admite Node 20 o superior; 22 coincide con los Dockerfiles del workspace).
 - npm.
 
 ### Instalación
@@ -66,7 +66,7 @@ flowchart LR
 ```bash
 git clone https://github.com/bravoisaac/API_Mymangaonline.git
 cd API_Mymangaonline
-npm install
+npm ci
 ```
 
 Copia la configuración de ejemplo:
@@ -194,7 +194,7 @@ Las pruebas cubren utilidades asíncronas, caché, política de contenido, valid
 
 ## Despliegue
 
-El repositorio incluye `Dockerfile` y [`render.yaml`](./render.yaml) para publicar un Web Service en Render. Para conectar la API con el frontend en Cloudflare Pages, consulta la [guía completa](https://github.com/bravoisaac/Mymangaonline/blob/main/DEPLOY_FREE.md).
+El proyecto incluye un `Dockerfile` para Node 22 y `linux/amd64`, además de [`render.yaml`](./render.yaml) para despliegues basados en repositorio. El plan recomendado para uso personal no conecta Git: publica una imagen versionada en Docker Hub y crea en Render un **Web Service > Existing Image**. Consulta la [guía gratuita y manual](../Mymangaonline/DEPLOY_FREE.md).
 
 ## Licencia y uso
 
