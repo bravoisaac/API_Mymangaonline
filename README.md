@@ -10,6 +10,12 @@
 [![Tests](https://img.shields.io/badge/Tests-Node%20Test%20Runner-2563EB)](#calidad-y-pruebas)
 [![License](https://img.shields.io/badge/Licencia-MIT-16A34A)](#licencia-y-uso)
 
+<p>
+  <a href="https://mymangaonline-personal.pages.dev"><strong>Abrir aplicación web</strong></a>
+  ·
+  <a href="https://mymangaonline-api.onrender.com/api/health"><strong>Estado de la API</strong></a>
+</p>
+
 </div>
 
 <p align="center">
@@ -108,7 +114,8 @@ La referencia completa, con límites, caché, proxy y proveedores opcionales, es
 
 ## Endpoints
 
-Base local: `http://localhost:3000/api`
+- Base local: `http://localhost:3000/api`
+- Base pública: [https://mymangaonline-api.onrender.com/api](https://mymangaonline-api.onrender.com/api)
 
 ### Sistema y fuentes
 
