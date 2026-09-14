@@ -1,8 +1,10 @@
 import { AxiosError } from 'axios';
 import { NextFunction, Request, Response } from 'express';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 import { env } from '../config/env';
-import { assertSafeOutboundUrl, createSafeHttpsAgent, validateOutboundUrlSyntax } from '../security/outboundUrl';
+import { createSafeHttpsAgent, validateOutboundUrlSyntax } from '../security/outboundUrl';
 import { AppError, ExternalApiError } from '../utils/errors';
 import { httpClient } from '../utils/httpClient';
 import { getRequiredString } from '../utils/requestValidation';
@@ -23,7 +25,9 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set(['image/avif', 'image/gif', 'image/j
 const IMAGE_PROXY_RETRY_ATTEMPTS = 4;
 const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 const IMAGE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
-const IMAGE_CACHE_MAX_ITEM_BYTES = 2 * 1024 * 1024;
+const IMAGE_CACHE_MAX_ITEM_BYTES = 5 * 1024 * 1024;
+const IMAGE_BROWSER_CACHE_SECONDS = 7 * 24 * 60 * 60;
+const IMAGE_SHARED_CACHE_SECONDS = 30 * 24 * 60 * 60;
 
 type ProxiedImage = {
   buffer: Buffer;
@@ -32,6 +36,18 @@ type ProxiedImage = {
 
 type CachedImage = ProxiedImage & {
   expiresAt: number;
+};
+
+type UpstreamImage = {
+  contentLength?: number;
+  contentType: string;
+  stream: Readable;
+};
+
+type PendingImageRequest = {
+  promise: Promise<ProxiedImage>;
+  reject: (error: unknown) => void;
+  resolve: (image: ProxiedImage) => void;
 };
 
 const imageCache = new Map<string, CachedImage>();
@@ -70,6 +86,20 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function createPendingImageRequest(): PendingImageRequest {
+  let resolve!: (image: ProxiedImage) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<ProxiedImage>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  // The first request owns the stream, so keep a rejected download from becoming
+  // an unhandled promise when no coalesced request is waiting for it.
+  void promise.catch(() => undefined);
+  return { promise, reject, resolve };
+}
+
 async function acquireImageRequestSlot() {
   if (activeImageRequests < env.imageProxyConcurrency) {
     activeImageRequests += 1;
@@ -93,17 +123,21 @@ function releaseImageRequestSlot() {
   imageRequestWaiters.shift()?.();
 }
 
-async function withImageRequestSlot<TValue>(loader: () => Promise<TValue>) {
-  await acquireImageRequestSlot();
+function releaseImageStreamSlot(stream: Readable) {
+  let released = false;
 
-  try {
-    return await loader();
-  } finally {
-    if (env.imageProxyRequestDelayMs > 0) {
-      await wait(env.imageProxyRequestDelayMs);
+  const release = () => {
+    if (released) {
+      return;
     }
-    releaseImageRequestSlot();
-  }
+
+    released = true;
+    setTimeout(releaseImageRequestSlot, env.imageProxyRequestDelayMs);
+  };
+
+  stream.once('end', release);
+  stream.once('error', release);
+  stream.once('close', release);
 }
 
 function getRetryDelayMs(error: AxiosError, attempt: number) {
@@ -178,32 +212,56 @@ function cacheImage(imageUrl: string, image: ProxiedImage) {
   imageCacheBytes += image.buffer.length;
 }
 
-async function downloadImage(imageUrl: URL): Promise<ProxiedImage> {
+async function openImageStream(imageUrl: URL): Promise<UpstreamImage> {
   for (let attempt = 0; attempt < IMAGE_PROXY_RETRY_ATTEMPTS; attempt += 1) {
+    let slotAcquired = false;
+    let slotManagedByStream = false;
+
     try {
-      const upstream = await withImageRequestSlot(() =>
-        httpClient.get<ArrayBuffer>(imageUrl.toString(), {
-          responseType: 'arraybuffer',
-          headers: getImageProxyHeaders(imageUrl),
-          httpsAgent: SAFE_IMAGE_AGENT,
-          maxRedirects: 0,
-          maxContentLength: env.imageProxyMaxBytes,
-          maxBodyLength: env.imageProxyMaxBytes
-        })
-      );
-      const imageBuffer = Buffer.from(upstream.data);
+      await acquireImageRequestSlot();
+      slotAcquired = true;
+
+      const upstream = await httpClient.get<Readable>(imageUrl.toString(), {
+        responseType: 'stream',
+        headers: getImageProxyHeaders(imageUrl),
+        httpsAgent: SAFE_IMAGE_AGENT,
+        maxRedirects: 0,
+        maxContentLength: env.imageProxyMaxBytes,
+        maxBodyLength: env.imageProxyMaxBytes
+      });
+      releaseImageStreamSlot(upstream.data);
+      slotManagedByStream = true;
+
       const contentType = getHeaderString(upstream.headers['content-type']).split(';')[0].trim().toLowerCase();
+      const contentLengthHeader = getHeaderString(upstream.headers['content-length']);
+      const rawContentLength = contentLengthHeader ? Number(contentLengthHeader) : Number.NaN;
+      const contentLength = Number.isSafeInteger(rawContentLength) && rawContentLength >= 0
+        ? rawContentLength
+        : undefined;
 
       if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
+        upstream.data.destroy();
         throw new ExternalApiError('Image provider returned an unsupported content type');
       }
 
-      if (imageBuffer.length > env.imageProxyMaxBytes) {
+      if (contentLength !== undefined && contentLength > env.imageProxyMaxBytes) {
+        upstream.data.destroy();
         throw new ExternalApiError('Image provider response exceeded the configured size limit');
       }
 
-      return { buffer: imageBuffer, contentType };
+      return { contentLength, contentType, stream: upstream.data };
     } catch (error) {
+      if (slotAcquired && !slotManagedByStream) {
+        const errorStream = error instanceof AxiosError ? error.response?.data : undefined;
+
+        if (errorStream instanceof Readable) {
+          errorStream.destroy();
+        }
+
+        await wait(env.imageProxyRequestDelayMs);
+        releaseImageRequestSlot();
+      }
+
       if (!(error instanceof AxiosError) || error.response?.status !== 429 || attempt >= IMAGE_PROXY_RETRY_ATTEMPTS - 1) {
         throw error;
       }
@@ -215,12 +273,63 @@ async function downloadImage(imageUrl: URL): Promise<ProxiedImage> {
   throw new ExternalApiError('Image provider request failed');
 }
 
-function loadImage(imageUrl: URL) {
+async function streamAndCacheImage(
+  imageUrl: URL,
+  response: Response,
+  pending: PendingImageRequest
+) {
+  const cacheKey = imageUrl.toString();
+  try {
+    const upstream = await openImageStream(imageUrl);
+    const chunks: Buffer[] = [];
+    let receivedBytes = 0;
+    const collector = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        receivedBytes += chunk.length;
+
+        if (receivedBytes > env.imageProxyMaxBytes) {
+          callback(new ExternalApiError('Image provider response exceeded the configured size limit'));
+          return;
+        }
+
+        chunks.push(chunk);
+        callback(null, chunk);
+      }
+    });
+
+    response.setHeader('Content-Type', upstream.contentType);
+
+    if (upstream.contentLength !== undefined) {
+      response.setHeader('Content-Length', String(upstream.contentLength));
+    }
+
+    setImageCacheHeaders(response);
+
+    await pipeline(upstream.stream, collector, response);
+    const image = { buffer: Buffer.concat(chunks, receivedBytes), contentType: upstream.contentType };
+    cacheImage(cacheKey, image);
+    pending.resolve(image);
+  } catch (error) {
+    pending.reject(error);
+    throw error;
+  } finally {
+    pendingImageRequests.delete(cacheKey);
+  }
+}
+
+function setImageCacheHeaders(response: Response) {
+  response.setHeader(
+    'Cache-Control',
+    `public, max-age=${IMAGE_BROWSER_CACHE_SECONDS}, s-maxage=${IMAGE_SHARED_CACHE_SECONDS}, stale-while-revalidate=86400`
+  );
+}
+
+function loadBufferedImage(imageUrl: URL) {
   const cacheKey = imageUrl.toString();
   const cached = getCachedImage(cacheKey);
 
   if (cached) {
-    return Promise.resolve<ProxiedImage>(cached);
+    return cached;
   }
 
   const pending = pendingImageRequests.get(cacheKey);
@@ -229,30 +338,33 @@ function loadImage(imageUrl: URL) {
     return pending;
   }
 
-  const request = downloadImage(imageUrl)
-    .then((image) => {
-      cacheImage(cacheKey, image);
-      return image;
-    })
-    .finally(() => {
-      pendingImageRequests.delete(cacheKey);
-    });
-
-  pendingImageRequests.set(cacheKey, request);
-  return request;
+  return undefined;
 }
 
 export async function proxyImage(request: Request, response: Response, next: NextFunction) {
   try {
-    const imageUrl = getImageUrl(request.query.url);
-    const safeImageUrl = await assertSafeOutboundUrl(imageUrl, { allowedHosts: ALLOWED_IMAGE_HOST_SET });
-    const image = await loadImage(safeImageUrl);
+    const parsedImageUrl = new URL(getImageUrl(request.query.url));
+    const bufferedImage = loadBufferedImage(parsedImageUrl);
+
+    if (!bufferedImage) {
+      const pending = createPendingImageRequest();
+      pendingImageRequests.set(parsedImageUrl.toString(), pending.promise);
+      await streamAndCacheImage(parsedImageUrl, response, pending);
+      return;
+    }
+
+    const image = await bufferedImage;
 
     response.setHeader('Content-Type', image.contentType);
     response.setHeader('Content-Length', String(image.buffer.length));
-    response.setHeader('Cache-Control', 'public, max-age=86400');
+    setImageCacheHeaders(response);
     response.send(image.buffer);
   } catch (error) {
+    if (response.headersSent) {
+      next(error);
+      return;
+    }
+
     if (error instanceof AxiosError) {
       const status = error.response?.status;
       next(new ExternalApiError(status ? `Image provider request failed with status ${status}` : 'Image provider request failed'));

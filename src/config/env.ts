@@ -151,7 +151,7 @@ export const env = {
   imageProxyConcurrency: parseIntegerInRange(
     'IMAGE_PROXY_CONCURRENCY',
     process.env.IMAGE_PROXY_CONCURRENCY,
-    3,
+    6,
     1,
     20
   ),
@@ -165,7 +165,7 @@ export const env = {
   imageProxyRequestDelayMs: parseIntegerInRange(
     'IMAGE_PROXY_REQUEST_DELAY_MS',
     process.env.IMAGE_PROXY_REQUEST_DELAY_MS,
-    75,
+    25,
     0,
     5000
   ),

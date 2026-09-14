@@ -3,7 +3,12 @@ import { NextFunction, Request, Response } from 'express';
 import { env } from '../config/env';
 import { AppError } from '../utils/errors';
 
-export function errorMiddleware(error: Error, request: Request, response: Response, _next: NextFunction) {
+export function errorMiddleware(error: Error, request: Request, response: Response, next: NextFunction) {
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
+
   const parsingError = error as Error & { type?: string };
   const isPayloadTooLarge = parsingError.type === 'entity.too.large';
   const isInvalidJson = parsingError.type === 'entity.parse.failed';
