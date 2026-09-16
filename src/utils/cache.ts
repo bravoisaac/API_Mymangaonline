@@ -86,6 +86,9 @@ export class TtlCache<TValue> {
   }
 
   set(key: string, value: TValue): void {
+    // Refresh the insertion order as well as the TTL so overwrites remain hot
+    // and are not evicted before less recently written entries.
+    this.entries.delete(key);
     this.entries.set(key, {
       expiresAt: Date.now() + this.ttlMs,
       value

@@ -42,3 +42,16 @@ test('keeps recently used entries when the cache reaches its size limit', () => 
   assert.equal(cache.get('second'), undefined);
   assert.equal(cache.get('third'), 'third value');
 });
+
+test('treats overwritten entries as recently used', () => {
+  const cache = new TtlCache<string>(60_000, 2);
+
+  cache.set('first', 'old value');
+  cache.set('second', 'second value');
+  cache.set('first', 'new value');
+  cache.set('third', 'third value');
+
+  assert.equal(cache.get('first'), 'new value');
+  assert.equal(cache.get('second'), undefined);
+  assert.equal(cache.get('third'), 'third value');
+});

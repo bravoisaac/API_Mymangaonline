@@ -132,9 +132,12 @@ export class MangaAggregatorService {
 
   async getChapters(sourceId: string, mangaId: string, options?: ChapterOptions): Promise<NormalizedChapter[]> {
     const source = this.getEnabledSource(sourceId);
-    const manga = await source.getMangaDetails(mangaId, { lang: options?.lang });
+    const [manga, chapters] = await Promise.all([
+      source.getMangaDetails(mangaId, { lang: options?.lang }),
+      source.getChapters(mangaId, options)
+    ]);
     assertMangaAllowed(manga);
-    return source.getChapters(mangaId, options);
+    return chapters;
   }
 
   async getChapterPages(sourceId: string, chapterId: string, options?: ChapterPageOptions): Promise<NormalizedPage[]> {

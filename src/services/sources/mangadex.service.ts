@@ -230,14 +230,15 @@ export class MangaDexService implements MangaSource {
 
     return this.cached(['getMangaDetails', id, lang], async () => {
       try {
-        const response = await requestMangaDex<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
-          params: {
-            'includes[]': ['cover_art', 'author', 'artist']
-          }
-        });
+        const [response, chaptersCount] = await Promise.all([
+          requestMangaDex<MangaDexSingle<MangaAttributes>>(`${this.baseUrl}/manga/${id}`, {
+            params: {
+              'includes[]': ['cover_art', 'author', 'artist']
+            }
+          }),
+          this.getChapterCount(id, lang)
+        ]);
         const entity = response.data.data;
-
-        const chaptersCount = await this.getChapterCount(id, lang);
         const manga = this.mapManga(entity, lang);
 
         return {
